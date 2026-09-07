@@ -110,6 +110,14 @@ dpkg-deb -c package.deb    # file listing with permissions
 lintian package.deb        # policy checks
 ```
 
+## Acknowledgements
+
+`py2deb` is inspired by [cargo-deb](https://github.com/kornelski/cargo-deb),
+which packages Rust binaries straight from `Cargo.toml`. Its central idea —
+that a `.deb` should be described in the manifest a project already has, rather
+than in a parallel `debian/` directory — is the one this project borrows and
+applies to Python. `cargo-deb` builds the `.deb` for `py2deb` itself.
+
 ## License
 
 GPL-3.0. See [LICENSE](LICENSE).
