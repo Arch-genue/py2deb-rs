@@ -1,20 +1,21 @@
 use std::path::{Path, PathBuf};
 use std::env;
 use std::fs;
-use std::io::{Read, Write};
 
 use clap::{Parser, Subcommand};
 use anyhow::{Context, Result, bail};
 use serde::{Serialize, Deserialize};
 use toml::{Table, Value};
 use colored::Colorize;
-use ignore::{WalkBuilder, overrides::OverrideBuilder};
 
 mod architecture;
 use architecture::Architecture;
 
 mod package;
 use package::Package;
+
+mod deb;
+use deb::build::DebianBuild;
 
 #[derive(Parser)]
 #[command(version, about)]
@@ -75,7 +76,8 @@ fn main() -> Result<()> {
 
             let new_package = Package::new(
                 filename,
-                "0.1.0"
+                "0.1.0",
+                "Description here"
             );
             let new_package_value = Value::try_from(new_package)?;
                 tool.insert("py2deb".into(), new_package_value);
@@ -94,64 +96,10 @@ fn main() -> Result<()> {
             let value: toml::Value = toml::from_str(&config_toml)?;
             let section = value.get("tool").and_then(|t| t.get("py2deb")).with_context(|| format!("Cannot find [tool.py2deb] section. Init project first"))?;
             let package: Package = section.clone().try_into()?;
-            println!("Building package");
+            println!("Building Debian package");
             println!("{}", package);
-            let source_path = current_path.join(package.src);
-            println!("Source path: {}", source_path.to_string_lossy().blue());
-            if !source_path.exists() {
-                bail!("Cannot find source path!");
-            }
-            let mut dest_path = PathBuf::from("/usr/lib/python3/dist-packages/");
-            let gitignore_path = current_path.join(".gitignore");
-            if gitignore_path.exists() {
-                let gitignore = fs::read_to_string(gitignore_path)?;
-                
-            }
-
-            if let Some(dest) = package.dest {
-                dest_path = dest_path.join(dest);
-            } else {
-                let filename = current_path.file_name().and_then(|f| f.to_str()).context("Parent path has no file name")?;
-                dest_path.push(filename);
-            }
-
-            let pattern = source_path.join("**/*");
-            let pattern = pattern
-                .to_str()
-                .context("Failed to convert PathBuf to &str")?;
-
-            let mut overrides = OverrideBuilder::new(&source_path);
-            for exclude_rule in &package.exclude {
-                let exclude_item = &("!".to_owned()+exclude_rule);
-                overrides.add(exclude_item)?;
-            }
-
-            let walker = WalkBuilder::new(&source_path)
-                .hidden(false)
-                .git_ignore(true)
-                .git_global(false)
-                .git_exclude(false)
-                .overrides(overrides.build()?)
-                .build();
-            
-            let target_path = current_path.join("target/");
-            if target_path.exists() {
-                fs::remove_dir(&target_path)?;
-            }
-            fs::create_dir(&target_path)?;
-            for entry in walker {
-                match entry {
-                    Ok(entry) => {
-                        let path = entry.path();
-                        if path == source_path {
-                            continue
-                        }
-                        let nd_path = path.strip_prefix(&source_path)?;
-                        println!("{} => {}", path.display(), dest_path.join(nd_path).display())
-                    },
-                    Err(e) => eprintln!("Glob error: {e}"),
-                }
-            }
+            let mut build = DebianBuild::new(package, current_path);
+            build.build()?;
         },
         None => {}
     }

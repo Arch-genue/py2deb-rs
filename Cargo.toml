@@ -11,10 +11,22 @@ categories = ["command-line-utilities", "development-tools::build-utils"]
 
 [dependencies]
 anyhow = "1.0.104"
+ar = "0.9.0"
+cargo-deb = "3.8.0"
 clap = { version="4.6.6", features = ["derive"] }
 colored = "3.1.1"
-glob = "0.3.4"
+flate2 = "1.1.10"
 ignore = "0.4.33"
+md-5 = "0.11.0"
 serde = { version = "1.0.229", features = ["derive"] }
 shellexpand = "3.1.2"
+tar = "0.4.46"
 toml = "1.1.5"
+
+[package.metadata.deb]
+name = "py2deb-rs"
+maintainer = "Arch-genue <vkarcaev@gmail.com>"
+section = "utils"
+priority = "optional"
+# Resolved by dpkg-shlibdeps at package time
+depends = "$auto"
