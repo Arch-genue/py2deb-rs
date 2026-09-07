@@ -2,6 +2,12 @@
 name = "py2deb"
 version = "0.1.0"
 edition = "2024"
+description = "Build Debian packages from Python projects, configured from pyproject.toml"
+license = "GPL-3.0"
+readme = "README.md"
+repository = "https://github.com/Arch-genue/py2deb-rs"
+keywords = ["debian", "deb", "packaging", "python", "dpkg"]
+categories = ["command-line-utilities", "development-tools::build-utils"]
 
 [dependencies]
 anyhow = "1.0.104"
