@@ -1,0 +1,15 @@
+[package]
+arch = "amd64"
+dependencies = [
+    "python3-libgvcp",
+    "python3-evdev",
+]
+maintainer = "Arch <vkarcaev@gmail.com"
+package = "python3-libgkeyboard"
+version = "0.1"
+
+[tool.py2deb]
+arch = "all"
+dependencies = []
+package = "py2deb"
+version = "0.1.0"
