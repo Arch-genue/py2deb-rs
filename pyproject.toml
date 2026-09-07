@@ -13,3 +13,5 @@ arch = "all"
 dependencies = []
 package = "py2deb"
 version = "0.1.0"
+src = "src/"
+data = "data/"

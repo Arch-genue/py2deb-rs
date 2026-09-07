@@ -13,6 +13,16 @@ pub struct Package {
     maintainer: Option<String>,
     #[serde(default)]
     dependencies: Vec<String>,
+    #[serde(default)]
+    pub src: String,
+    pub dest: Option<String>,
+    #[serde(default)]
+    pub include: Vec<String>,
+    #[serde(default)]
+    pub exclude: Vec<String>,
+    description: Option<String>,
+    #[serde(default)]
+    priority: String,
 }
 fn default_arch() -> Architecture {
     Architecture::All
@@ -26,6 +36,12 @@ impl Package {
             arch: Architecture::All,
             maintainer: None,
             dependencies: Vec::new(),
+            src: "src".into(),
+            dest: None,
+            include: Vec::new(),
+            exclude: Vec::new(),
+            description: None,
+            priority: "optional".into() 
         }
     }
 }
