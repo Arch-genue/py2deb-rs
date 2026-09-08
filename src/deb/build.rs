@@ -279,7 +279,18 @@ esac
         }
 
         let header = self.tar_header.as_mut().expect("TarHeader doesnt exists");
-        header.set_path(entry.rel_str)?;
+        // header.set_path(entry.rel_str)?; // SHIT SHIT SHIT!!!!!!!!!!!
+
+        let path_bytes = entry.rel_str.as_bytes();
+        let bytes_to_copy = &path_bytes[..std::cmp::min(path_bytes.len(), 100)];
+        header.as_mut_bytes()[0..100].fill(0);
+        header.as_mut_bytes()[0..bytes_to_copy.len()].copy_from_slice(bytes_to_copy);
+        
+        // Сбрасываем старое имя в нули и пишем сырые байты напрямую
+        header.as_mut_bytes()[0..100].fill(0);
+        header.as_mut_bytes()[0..bytes_to_copy.len()].copy_from_slice(bytes_to_copy);
+
+
         header.set_entry_type(tar::EntryType::Regular);
         header.set_size(contents.len() as u64);
         header.set_mode(entry.chmod);
