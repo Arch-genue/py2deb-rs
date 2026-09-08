@@ -1,7 +1,7 @@
 use crate::package::Package;
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::{PathBuf};
 use std::{fs, io};
 use std::io::{Write};
 
@@ -100,7 +100,7 @@ impl DebianBuild {
 
         let target_deb_path = self.current_path.join("target").join("debian");
         if !target_deb_path.exists() {
-            fs::create_dir(&target_deb_path).context("Cannot create target/debian directory")?;
+            fs::create_dir_all(&target_deb_path).context("Cannot create target/debian directory")?;
         }
         
         // Tar pack
