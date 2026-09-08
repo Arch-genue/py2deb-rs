@@ -148,8 +148,8 @@ impl DebianBuild {
             self.write_file_entry(&mut data_archive, EntryOption{path: src_path, rel_str: format!("./{}", dest_path.display()), chmod: chmode}, true)?;
         }
 
-        let encoder = data_archive.into_inner()?;
-        encoder.finish()?;
+        data_archive.finish()?;
+        // encoder.finish()?;
 
         Ok(())
     }
@@ -193,8 +193,7 @@ impl DebianBuild {
             self.write_file_entry(&mut data_archive, EntryOption{path: script_path.clone(), rel_str: format!("./{}", filename), chmod: 0o755}, false)?;
         }
         
-        let encoder = data_archive.into_inner()?;
-        encoder.finish()?;
+        data_archive.finish()?;
 
         Ok(())
     }
