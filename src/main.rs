@@ -1,15 +1,12 @@
-use std::path::{Path, PathBuf};
+use std::path::{PathBuf};
 use std::env;
 use std::fs;
 
 use clap::{Parser, Subcommand};
 use anyhow::{Context, Result, bail};
-use serde::{Serialize, Deserialize};
 use toml::{Table, Value};
-use colored::Colorize;
 
 mod architecture;
-use architecture::Architecture;
 
 mod package;
 use package::Package;
@@ -46,7 +43,6 @@ fn main() -> Result<()> {
         current_path = PathBuf::from(p_path.as_ref());
     }
     let config_path = current_path.join("pyproject.toml");
-    println!("{}", current_path.display());
 
     match cli.command {
         Some(Commands::Init {name: Some(name)}) => {
@@ -93,8 +89,8 @@ fn main() -> Result<()> {
                 bail!("pyproject.toml not found!");
             }
             let config_toml = fs::read_to_string(&config_path).with_context(|| format!("Failed to read {}", config_path.display()))?;
-            let value: toml::Value = toml::from_str(&config_toml)?;
-            let section = value.get("tool").and_then(|t| t.get("py2deb")).with_context(|| format!("Cannot find [tool.py2deb] section. Init project first"))?;
+            let value: toml::Value = toml::from_str(&config_toml).context("Invalid config file")?;
+            let section = value.get("tool").and_then(|t| t.get("py2deb")).with_context(|| "Cannot find [tool.py2deb] section. Init project first".to_string())?;
             let package: Package = section.clone().try_into()?;
             println!("Building Debian package");
             println!("{}", package);
