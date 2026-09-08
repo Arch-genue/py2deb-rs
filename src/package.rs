@@ -22,7 +22,7 @@ pub struct IncludeEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Package {
     /// Deb package name
-    package: String,
+    pub package: String,
     /// Package version
     version: String,
 
@@ -195,9 +195,6 @@ impl fmt::Display for Package {
         }
         if !self.conflicts.is_empty() {
             writeln!(f, "Conflicts: {}", self.conflicts.join(", "))?;
-        }
-        if !self.include.is_empty() {
-            writeln!(f, "Include: {:?}", self.include)?;
         }
         Ok(())
     }

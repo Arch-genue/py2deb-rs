@@ -1,7 +1,7 @@
 use crate::package::Package;
 
 use std::collections::HashMap;
-use std::path::{PathBuf};
+use std::path::{Path, PathBuf};
 use std::{fs, io};
 use std::io::{Write};
 
@@ -186,11 +186,47 @@ impl DebianBuild {
 
         self.write_file_entry(&mut data_archive, EntryOption{path: control_path, rel_str: "./control".to_string(), ..EntryOption::default()}, false)?;
         self.write_file_entry(&mut data_archive, EntryOption{path: md5sums_path, rel_str: "./md5sums".to_string(), ..EntryOption::default()}, false)?;
+
+        let scripts = self.create_control_scripts().context("Cannot create control scripts")?;
+        for script_path in scripts {
+            let filename = script_path.file_name().and_then(|f| f.to_str()).context("Cannot get script filename")?;
+            self.write_file_entry(&mut data_archive, EntryOption{path: script_path.clone(), rel_str: format!("./{}", filename), chmod: 0o755}, false)?;
+        }
         
         let encoder = data_archive.into_inner()?;
         encoder.finish()?;
 
         Ok(())
+    }
+
+    fn create_control_scripts(&mut self) -> Result<Vec<PathBuf>> {
+        let target_deb_path = self.current_path.join("target").join("debian");
+        let mut scripts: Vec<PathBuf> = Vec::new();
+        let postinst = format!("#!/bin/sh
+set -e
+case \"$1\" in
+    configure)
+        py3compile -p {}
+    ;;
+esac
+", self.package.package);
+        let prerm = format!("#!/bin/sh
+set -e
+case \"$1\" in
+    remove|upgrade|deconfigure)
+        py3clean -p {}
+    ;;
+esac
+", self.package.package);
+        let postinst_path = target_deb_path.join("postinst");
+        let prerm_path = target_deb_path.join("prerm");
+        
+        fs::write(&postinst_path,  postinst).context("Unable to create postinst script")?;
+        fs::write(&prerm_path,  prerm).context("Unable to create prerm script")?;
+        scripts.push(postinst_path);
+        scripts.push(prerm_path);
+
+        Ok(scripts)
     }
 
     fn create_ar_archive(&mut self) -> Result<()> {
