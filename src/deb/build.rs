@@ -285,11 +285,6 @@ esac
         let bytes_to_copy = &path_bytes[..std::cmp::min(path_bytes.len(), 100)];
         header.as_mut_bytes()[0..100].fill(0);
         header.as_mut_bytes()[0..bytes_to_copy.len()].copy_from_slice(bytes_to_copy);
-        
-        // Сбрасываем старое имя в нули и пишем сырые байты напрямую
-        header.as_mut_bytes()[0..100].fill(0);
-        header.as_mut_bytes()[0..bytes_to_copy.len()].copy_from_slice(bytes_to_copy);
-
 
         header.set_entry_type(tar::EntryType::Regular);
         header.set_size(contents.len() as u64);
