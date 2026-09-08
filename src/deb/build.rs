@@ -236,21 +236,44 @@ esac
 
         let mut builder = ar::Builder::new(fs::File::create(debian_package_path)?);
 
-        let header = ar::Header::new(b"debian-binary".to_vec(), 4);
-        builder.append(&header, &b"2.0\n"[..])?;
-
-        builder.append_path(target_deb_path.join("control.tar.gz"))?;
-        builder.append_path(target_deb_path.join("data.tar.gz"))?;
-        // control.tar.gz, затем data.tar.gz
+        // Members must come in this order: dpkg reads the archive as a stream
+        // and wants the format version first, then the metadata it decides on.
+        self.append_ar_member(&mut builder, "debian-binary", b"2.0\n")?;
+        for member in ["control.tar.gz", "data.tar.gz"] {
+            let bytes = fs::read(target_deb_path.join(member))
+                .with_context(|| format!("Cannot read {member}"))?;
+            self.append_ar_member(&mut builder, member, &bytes)?;
+        }
 
         Ok(())
+    }
+
+    /// Appends one `ar` member with the ownership dpkg itself writes.
+    ///
+    /// `ar::Builder::append_path` would copy uid, gid and mtime from the build
+    /// machine, which leaves the packager's own account stamped on the archive
+    /// and makes builds unreproducible; every field is set explicitly instead.
+    fn append_ar_member<W: Write>(&self, builder: &mut ar::Builder<W>, name: &str, bytes: &[u8]) -> Result<()> {
+        let mut header = ar::Header::new(name.as_bytes().to_vec(), bytes.len() as u64);
+        header.set_mode(0o100644); // dpkg writes the file-type bits too
+        header.set_mtime(0);
+        header.set_uid(0);
+        header.set_gid(0);
+
+        builder
+            .append(&header, bytes)
+            .with_context(|| format!("Cannot add {name} to the deb archive"))
     }
 
     fn write_dir_entry<W: Write>(&mut self, archive: &mut TarBuilder<W>, rel_str: String) -> Result<()> {
         let header = self.tar_header.as_mut().expect("TarHeader doesnt exists");
 
         println!("Create folder {}", rel_str);
-        header.set_path(rel_str)?;
+        let path_bytes = rel_str.as_bytes();
+        let bytes_to_copy = &path_bytes[..std::cmp::min(path_bytes.len(), 100)];
+        header.as_mut_bytes()[0..100].fill(0);
+        header.as_mut_bytes()[0..bytes_to_copy.len()].copy_from_slice(bytes_to_copy);
+
         header.set_entry_type(tar::EntryType::Directory);
         header.set_size(0);
         header.set_mode(0o755);

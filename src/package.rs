@@ -180,7 +180,7 @@ Description: {}\n",
             control_str.push_str(format!("Conflicts: {}\n", self.conflicts.join(", ")).as_str());
         }
 
-        control_str.trim_start().to_string() + "\n"
+        control_str.trim_start().to_string()
     }
 }
 
