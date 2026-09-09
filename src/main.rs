@@ -5,11 +5,14 @@ use std::fs;
 use clap::{Parser, Subcommand};
 use anyhow::{Context, Result, bail};
 use toml::{Table, Value};
+use colored::Colorize;
 
 mod architecture;
 
 mod package;
 use package::Package;
+
+mod info;
 
 mod deb;
 use deb::build::DebianBuild;
@@ -95,7 +98,10 @@ fn main() -> Result<()> {
             println!("Building Debian package");
             println!("{}", package);
             let mut build = DebianBuild::new(package, current_path);
-            build.build()?;
+            let build_info = build.build()?;
+
+            println!("{} target in {:.2?}", "Finished".green(), build_info.time);
+            println!("{}", build_info.deb_path.display());
         },
         None => {}
     }

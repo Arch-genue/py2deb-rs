@@ -1,10 +1,11 @@
+use crate::info::BuildInfo;
 use crate::package::Package;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::fs;
 use std::io::{Write, empty};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Result, Context, bail};
 use ignore::{WalkBuilder, overrides::OverrideBuilder};
@@ -62,24 +63,30 @@ impl DebianBuild {
         }
     }
 
-    pub fn build(&mut self) -> Result<()> {
+    pub fn build(&mut self) -> Result<BuildInfo> {
         let source_path = self.current_path.join(&self.package.src);
         println!("Source path: {}", source_path.to_string_lossy().blue());
         self.source_path = self.current_path.join(&self.package.src);
         if !source_path.exists() {
             bail!("Cannot find source path!");
         }
-
+        
         self.mtime = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
-
+        
+        let started = Instant::now();
         self.create_data_archive().context("Unable to create data.tar.gz")?;
         self.create_control_archive().context("Unable to create control.tar.gz")?;
-        self.create_ar_archive().context("Unable to create ar deb")?;
+        let deb_path = self.create_ar_archive().context("Unable to create ar deb")?;
+        
+        let build_info = BuildInfo::new(
+            deb_path,
+            started.elapsed()
+        );
 
-        Ok(())
+        Ok(build_info)
     }
 
     fn create_data_archive(&mut self) -> Result<()> {
@@ -238,13 +245,13 @@ esac
         Ok(scripts)
     }
 
-    fn create_ar_archive(&mut self) -> Result<()> {
+    fn create_ar_archive(&mut self) -> Result<PathBuf> {
         let target_deb_path = self.current_path.join("target").join("debian");
         let package_name = self.package.get_package_file_name();
         let debian_package_path = target_deb_path.join(&package_name);
         println!("Create {} in target/debian", package_name);
 
-        let mut builder = ar::Builder::new(fs::File::create(debian_package_path)?);
+        let mut builder = ar::Builder::new(fs::File::create(&debian_package_path)?);
 
         // Members must come in this order: dpkg reads the archive as a stream
         // and wants the format version first, then the metadata it decides on.
@@ -255,7 +262,7 @@ esac
             self.append_ar_member(&mut builder, member, &bytes)?;
         }
 
-        Ok(())
+        Ok(debian_package_path)
     }
 
     /// Appends one `ar` member with the ownership dpkg itself writes.
@@ -276,7 +283,7 @@ esac
     }
 
     fn write_dir_entry<W: Write>(&mut self, archive: &mut TarBuilder<W>, rel_str: String) -> Result<()> {
-        println!("Create folder {}", rel_str);
+        println!("{} {}", "Create directory".dimmed(), rel_str.green().dimmed());
         let mut acc = String::from(".");
         for segment in rel_str.trim_start_matches("./").trim_end_matches("/").split("/") {
             if segment.is_empty() {
@@ -314,7 +321,7 @@ esac
 
     fn write_file_entry<W: Write>(&mut self, archive: &mut TarBuilder<W>, entry: EntryOption, data_tar: bool) -> Result<()> {
         let path = &entry.path;
-        println!("Create file {}", entry.rel_str);
+        println!("{} {}", "Create file".dimmed(), entry.rel_str.blue().dimmed());
 
         let contents = fs::read(path)?;
 
