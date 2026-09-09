@@ -2,7 +2,7 @@
 
 Build Debian packages from Python projects, configured entirely from `pyproject.toml`.
 
-`py2deb` reads a `[tool.py2deb]` section, collects your Python sources, and writes a
+`py2deb` reads a `[tool.py2deb]` section, collects Python sources, and builds a
 `.deb` — no `debian/` directory, no `debhelper`, no build dependencies beyond the
 binary itself. Archives are assembled in-process, so packaging works the same on any
 machine with or without `dpkg-dev` installed.
@@ -17,7 +17,7 @@ a `rules` makefile, a changelog with its own version syntax, and a toolchain tha
 only runs on Debian. For an internal library shipped to a handful of machines,
 that is a lot of ceremony.
 
-`py2deb` takes the other approach: describe the package in eight lines of TOML
+`py2deb` takes the other approach: describe the package in some lines of TOML
 next to the code it describes, and get a `.deb` out.
 
 ## Install
@@ -98,10 +98,6 @@ Bytecode is deliberately not shipped. `.pyc` files are generated on the target
 machine by `py3compile` from the maintainer scripts, so they always match the
 interpreter actually installed there, and are removed again on uninstall.
 
-Builds are reproducible: file timestamps come from `SOURCE_DATE_EPOCH` when it is
-set, and all archive members are owned by `root:root`, so the same sources produce
-a byte-identical `.deb`.
-
 ## Verifying output
 
 ```sh
@@ -117,7 +113,3 @@ which packages Rust binaries straight from `Cargo.toml`. Its central idea —
 that a `.deb` should be described in the manifest a project already has, rather
 than in a parallel `debian/` directory — is the one this project borrows and
 applies to Python. `cargo-deb` builds the `.deb` for `py2deb` itself.
-
-## License
-
-GPL-3.0. See [LICENSE](LICENSE).
