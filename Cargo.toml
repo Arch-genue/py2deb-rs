@@ -1,6 +1,6 @@
 [package]
 name = "py2deb"
-version = "0.1.0"
+version = "0.5.3"
 edition = "2024"
 description = "Build Debian packages from Python projects, configured from pyproject.toml"
 license = "GPL-3.0"

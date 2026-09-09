@@ -1,4 +1,5 @@
 use crate::Verbosity;
+use crate::include_entry::IncludeEntry;
 use crate::info::BuildInfo;
 use crate::package::Package;
 
@@ -79,6 +80,11 @@ impl DebianBuild {
         self
     }
 
+    pub fn check(&mut self) -> Result<()> {
+
+        Ok(())
+    }
+
     pub fn build(&mut self) -> Result<BuildInfo> {
         let source_path = self.current_path.join(&self.package.src);
         self.source_path = self.current_path.join(&self.package.src);
@@ -92,9 +98,9 @@ impl DebianBuild {
             .as_secs();
         
         let started = Instant::now();
-        self.create_data_archive().context("Unable to create data.tar.gz")?;
-        self.create_control_archive().context("Unable to create control.tar.gz")?;
-        let deb_path = self.create_ar_archive().context("Unable to create ar deb")?;
+        self.build_data_archive().context("Unable to create data.tar.gz")?;
+        self.build_control_archive().context("Unable to create control.tar.gz")?;
+        let deb_path = self.build_ar_archive().context("Unable to create ar deb")?;
         
         let build_info = BuildInfo::new(
             deb_path,
@@ -104,7 +110,7 @@ impl DebianBuild {
         Ok(build_info)
     }
 
-    fn create_data_archive(&mut self) -> Result<()> {
+    fn build_data_archive(&mut self) -> Result<()> {
         if self.verbosity.is_normal() {
             eprintln!("{:>13} data.tar.gz archive", "Building".blue());
         }   
@@ -156,13 +162,28 @@ impl DebianBuild {
             let path = entry.path();
 
             let nd_path = path.strip_prefix(&self.source_path).with_context(|| format!("{} is not inside {}", path.display(), self.source_path.display()))?;
-            let relative_path = self.tar_root_path.join(nd_path);
+            
+            let relative_path: PathBuf = self.tar_root_path.join(nd_path);
             if path.is_dir() {
-                self.write_dir_entry(&mut data_archive, format!("./{}/", relative_path.display()))?;
+                // The path may already end in a slash; tar wants exactly one.
+                let dir = relative_path.display().to_string();
+                self.write_dir_entry(&mut data_archive, format!("./{}/", dir.trim_end_matches('/')))?;
             } else {
                 self.write_file_entry(&mut data_archive, EntryOption{path: path.to_path_buf(), rel_str: format!("./{}", relative_path.display()), ..Default::default()}, true)?;
             }
         }
+
+        // Copyright
+        let copyright_path = target_deb_path.join("copyright");
+        let copyright_contents = self.generate_copyright()?;
+
+        fs::write(&copyright_path, copyright_contents).context("Cannot create copyright file")?;
+        let copyright_entry = IncludeEntry{
+            src: "target/debian/copyright".into(),
+            dest: "usr/share/doc/$package/copyright".into(),
+            mode: Some(0o644)
+        };
+        self.package.include.push(copyright_entry);
 
         // Includes
         let includes = &self.package.include.clone();
@@ -171,10 +192,19 @@ impl DebianBuild {
             if !src_path.exists() {
                 bail!("Include entry not exists {}", src_path.display());
             }
-            let dest_path = entry.resolve_dest(&src_path).expect("Cannot parse dest in include field");
+            let dest_path = entry.resolve_dest(&src_path, &self.package).context("Cannot resolve dest in include field")?;
 
             let chmode = entry.resolve_mode(&src_path).unwrap_or(0o644);
             self.warn_unexpected_mode(&dest_path, chmode);
+
+            // An include may land anywhere, so its parents are not covered by
+            // the walk above; dpkg needs every one of them present.
+            if let Some(parent) = dest_path.parent() {
+                if !parent.as_os_str().is_empty() {
+                    self.write_dir_entry(&mut data_archive, format!("./{}/", parent.display()))?;
+                }
+            }
+
             self.write_file_entry(&mut data_archive, EntryOption{path: src_path, rel_str: format!("./{}", dest_path.display()), chmod: chmode}, true)?;
         }
 
@@ -186,6 +216,109 @@ impl DebianBuild {
         data_archive.finish()?;
 
         Ok(())
+    }
+
+    /// Builds the machine-readable copyright file.
+    ///
+    /// Follows what `cargo-deb` does: the ownership line falls back through
+    /// the config's `copyright`, then the maintainer as a `Comment` — never
+    /// as a `Copyright`, which would claim the packager owns the work — and
+    /// is left out entirely for licences that grant rights without naming an
+    /// owner. Anything else warns, because Debian requires the information.
+    fn generate_copyright(&self) -> Result<String> {
+        let package = &self.package;
+        let license = self.resolve_license()?;
+
+        let mut out = String::from(
+            "Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/\n",
+        );
+        out.push_str(&format!("Upstream-Name: {}\n", package.package));
+
+        let homepage = package.expand_dollar_properties(&package.homepage);
+        if !homepage.is_empty() {
+            out.push_str(&format!("Source: {homepage}\n"));
+        }
+
+        out.push_str("\nFiles: *\n");
+
+        let copyright = package.expand_dollar_properties(&package.copyright);
+        if !copyright.is_empty() {
+            out.push_str(&format!("Copyright: {copyright}\n"));
+        } else if license_needs_no_author(&license.name) {
+            // A licence like CC0 grants rights without naming an owner, so
+            // there is nothing missing to report.
+        } else if !package.maintainer.is_empty() {
+            out.push_str(&format!(
+                "Comment: Copyright information missing (maintainer: {})\n",
+                package.maintainer
+            ));
+            eprintln!(
+                "{:>15} no copyright set; add `copyright = \"2026 Your Name\"` to [tool.py2deb]",
+                "Warning".yellow().bold()
+            );
+        } else {
+            eprintln!(
+                "{:>15} Debian requires copyright information, but none could be determined",
+                "Warning".yellow().bold()
+            );
+        }
+
+        out.push_str(&format!("License: {}\n", license.name));
+        out.push_str(&license.body);
+
+        Ok(out)
+    }
+
+    /// Resolves what goes into the copyright file's `License:` field.
+    ///
+    /// A `license-file` is read verbatim and indented into the field, which is
+    /// what proprietary or uncommon licenses need. Otherwise the short name is
+    /// used on its own, and for licenses Debian ships in
+    /// `/usr/share/common-licenses` a pointer there replaces the full text —
+    /// Policy asks packages not to duplicate those.
+    fn resolve_license(&self) -> Result<ResolvedLicense> {
+        let name = self.package.expand_dollar_properties(&self.package.license);
+        let name = if name.is_empty() {
+            if self.package.license_file.is_empty() {
+                eprintln!(
+                    "{:>15} no license set, assuming GPL-3",
+                    "Warning".yellow().bold()
+                );
+            }
+            "GPL-3".to_string()
+        } else {
+            name
+        };
+
+        if !self.package.license_file.is_empty() {
+            let path = self.current_path.join(&self.package.license_file);
+            let text = fs::read_to_string(&path)
+                .with_context(|| format!("Cannot read license file {}", path.display()))?;
+
+            return Ok(ResolvedLicense {
+                body: indent_license_text(&text, self.package.license_file_skip_lines as usize),
+                name,
+            });
+        }
+
+        // Debian ships these, so the file only has to point at them.
+        let common = Path::new("/usr/share/common-licenses").join(&name);
+        let body = if common.exists() {
+            format!(
+                " On Debian systems, the complete text of the {} license can be\n found in `{}'.\n",
+                name,
+                common.display()
+            )
+        } else {
+            eprintln!(
+                "{:>15} {} is not in /usr/share/common-licenses; set `license-file` to ship its text",
+                "Warning".yellow().bold(),
+                name
+            );
+            String::new()
+        };
+
+        Ok(ResolvedLicense { name, body })
     }
 
     /// Warns when a file's mode contradicts where it is being installed.
@@ -203,14 +336,14 @@ impl DebianBuild {
 
         if in_bin_dir && !executable {
             eprintln!(
-                "{:>14} {} is not executable ({:04o}) — nothing under bin/ can run it",
+                "{:>15} {} is not executable ({:04o}) — nothing under bin/ can run it",
                 "Warning".yellow().bold(),
                 dest_str,
                 mode
             );
         } else if !in_bin_dir && executable {
             eprintln!(
-                "{:>14} {} is executable ({:04o}) but installs outside bin/",
+                "{:>15} {} is executable ({:04o}) but installs outside bin/",
                 "Warning".yellow().bold(),
                 dest_str,
                 mode
@@ -221,7 +354,7 @@ impl DebianBuild {
         // is a packaging bug even when the source file has it.
         if mode & 0o022 != 0 {
             eprintln!(
-                "{:>14} {} is writable by group or others ({:04o})",
+                "{:>15} {} is writable by group or others ({:04o})",
                 "Warning".yellow().bold(),
                 dest_str,
                 mode
@@ -229,7 +362,7 @@ impl DebianBuild {
         }
     }
 
-    fn create_control_archive(&mut self) -> Result<()> {
+    fn build_control_archive(&mut self) -> Result<()> {
         if self.verbosity.is_normal() {
             eprintln!("{:>13} control.tar.gz archive", "Building".blue());
         }
@@ -271,10 +404,12 @@ impl DebianBuild {
             let filename = script_path.file_name().and_then(|f| f.to_str()).context("Cannot get script filename")?;
             self.write_file_entry(&mut control_archive, EntryOption{path: script_path.clone(), rel_str: format!("./{}", filename), chmod: 0o755}, false)?;
         }
+
+        // Changelog
         let changelog = &self.package.changelog;
         if changelog.is_empty() {
             eprintln!(
-                "{:>14} no changelog set", "Warning".yellow().bold()
+                "{:>15} Changelog file not specified", "Warning".yellow().bold()
             );
         } else {
             let changelog_path = self.current_path.join(changelog);
@@ -282,7 +417,7 @@ impl DebianBuild {
                 //TODO!!! CHANGELOG BUILD
                 // self.write_file_entry(&mut data_archive, EntryOption{path: control_path, rel_str: "./control".to_string(), ..EntryOption::default()}, false)?;
             } else {
-                eprintln!("{:>14} changelog file not found {}", "Warning".yellow().bold(), changelog_path.display());
+                eprintln!("{:>15} changelog file not found {}", "Warning".yellow().bold(), changelog_path.display());
             }
         }
 
@@ -321,7 +456,7 @@ esac
         Ok(scripts)
     }
 
-    fn create_ar_archive(&mut self) -> Result<PathBuf> {
+    fn build_ar_archive(&mut self) -> Result<PathBuf> {
         let target_deb_path = self.current_path.join("target").join("debian");
         let package_name = self.package.get_package_file_name();
         let debian_package_path = target_deb_path.join(&package_name);
@@ -362,7 +497,7 @@ esac
 
     fn write_dir_entry<W: Write>(&mut self, archive: &mut TarBuilder<W>, rel_str: String) -> Result<()> {
         if self.verbosity.is_verbose() {
-            eprintln!("{} {}", "Create directory".dimmed(), rel_str.green().dimmed());
+            eprintln!("{:>15} {}", "Adding".blue(), rel_str.green());
         }
         let mut acc = String::from(".");
         for segment in rel_str.trim_start_matches("./").trim_end_matches("/").split("/") {
@@ -401,7 +536,7 @@ esac
 
     fn write_file_entry<W: Write>(&mut self, archive: &mut TarBuilder<W>, entry: EntryOption, data_tar: bool) -> Result<()> {
         if self.verbosity.is_verbose() {
-            eprintln!("{} {}", "Create file".dimmed(), entry.rel_str.blue().dimmed());
+            eprintln!("{:>15} {}", "Adding".blue(), entry.rel_str);
         }
         let path = &entry.path;
         let contents = fs::read(path)?;
@@ -437,4 +572,36 @@ esac
         archive.append(header, contents.as_slice())?;
         Ok(())
     }
+}
+
+/// The `License:` field of a copyright file: its short name, plus the
+/// indented block that follows it (empty when there is nothing to say).
+struct ResolvedLicense {
+    name: String,
+    body: String,
+}
+
+/// Folds licence text into an RFC822 continuation block.
+///
+/// Every line gains a leading space, and blank lines become ` .` — a truly
+/// empty line would end the paragraph and cut the field short.
+fn indent_license_text(text: &str, skip_lines: usize) -> String {
+    text.lines()
+        .skip(skip_lines)
+        .map(|line| {
+            if line.trim().is_empty() {
+                " .\n".to_string()
+            } else {
+                format!(" {line}\n")
+            }
+        })
+        .collect()
+}
+
+/// Licences that grant their rights without naming a copyright owner, so a
+/// missing `Copyright:` is not a packaging mistake. Mirrors `cargo-deb`.
+fn license_needs_no_author(name: &str) -> bool {
+    ["UNLICENSED", "PROPRIETARY", "CC-PDDC", "CC0-1.0"]
+        .iter()
+        .any(|l| l.eq_ignore_ascii_case(name))
 }

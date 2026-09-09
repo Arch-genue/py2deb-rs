@@ -8,6 +8,7 @@ use toml::{Table, Value};
 use colored::Colorize;
 
 mod architecture;
+mod include_entry;
 
 mod package;
 use package::Package;
@@ -33,12 +34,9 @@ struct CliArgs {
 
 #[derive(Subcommand)]
 enum Commands {
-    Init {
-        name: Option<String>
-    },
-    Build {
-
-    }
+    Init,
+    Build,
+    Show
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
@@ -71,22 +69,16 @@ fn main() -> Result<()> {
     let cli = CliArgs::parse();
     let verbosity = Verbosity::from_flags(cli.quiet, cli.verbose);
 
-    let mut current_path = env::current_dir()?;
-    if let Some(project_path) = cli.path.as_deref() {
-        let p_path = shellexpand::tilde(project_path);
-        current_path = PathBuf::from(p_path.as_ref());
+    let mut project_path = env::current_dir()?;
+    if let Some(_proj_path) = cli.path.as_deref() {
+        let p_path = shellexpand::tilde(_proj_path);
+        project_path = PathBuf::from(p_path.as_ref());
     }
-    let config_path = current_path.join("pyproject.toml");
+    let config_path = project_path.join("pyproject.toml");
 
     match cli.command {
-        Some(Commands::Init {name: Some(name)}) => {
-            println!("Project name {}", name);
-
-            current_path.push(name);
-            println!("Project directory is {}", current_path.display());
-        },
-        Some(Commands::Init {name : None}) => {
-            let filename = current_path.file_name().and_then(|f| f.to_str()).context("Parent path has no file name")?;
+        Some(Commands::Init) => {
+            let filename = project_path.file_name().and_then(|f| f.to_str()).context("Parent path has no file name")?;
             let is_exists: bool = config_path.exists();
             if !is_exists {
                 fs::File::create(&config_path)?;
@@ -118,22 +110,16 @@ fn main() -> Result<()> {
 
             fs::write(&config_path, toml::to_string_pretty(&table)?)?;
         },
-        Some(Commands::Build {}) => {
+        Some(Commands::Build) => {
             if !config_path.exists() {
                 bail!("pyproject.toml not found!");
             }
-            let config_toml = fs::read_to_string(&config_path).with_context(|| format!("Failed to read {}", config_path.display()))?;
-            let value: toml::Value = toml::from_str(&config_toml).context("Invalid config file")?;
-            let section = value.get("tool").and_then(|t| t.get("py2deb")).with_context(|| "Cannot find [tool.py2deb] section. Init project first".to_string())?;
-            let package: Package = section.clone().try_into()?;
-            
-            if verbosity.is_verbose() {
-                eprintln!("{}", package);
-            }
+            let package = Package::from_config(&config_path)?;
+
             if verbosity.is_normal() {
-                eprintln!("{:>12} {} {} ({})", "Packaging".green(), package.package, package.version, current_path.display());
+                eprintln!("{:>12} {} {} ({})", "Packaging".green(), package.package, package.version, project_path.display());
             }
-            let mut build = DebianBuild::new(package, current_path).with_verbosity(verbosity);
+            let mut build = DebianBuild::new(package, project_path).with_verbosity(verbosity);
             let build_info = build.build()?;
             if verbosity.is_normal() {
                 let file_size = fs::metadata(&build_info.deb_path)?.len();
@@ -141,7 +127,14 @@ fn main() -> Result<()> {
             }
             println!("{}", build_info.deb_path.display());
         },
-        None => {}
+        None | Some(Commands::Show) => {
+            if !config_path.exists() {
+                bail!("Cannot not find pyproject.toml in `{}`", project_path.display());
+            }
+            let package = Package::from_config(&config_path)?;
+            println!("{}", package);
+            eprintln!("Run `py2deb build` to build the .deb package.");
+        }
     }
 
     Ok(())
