@@ -1,9 +1,10 @@
 use crate::package::Package;
 
-use std::collections::HashMap;
-use std::path::{PathBuf};
-use std::{fs, io};
-use std::io::{Write};
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+use std::fs;
+use std::io::{Write, empty};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Result, Context, bail};
 use ignore::{WalkBuilder, overrides::OverrideBuilder};
@@ -43,6 +44,8 @@ pub struct DebianBuild {
     /// needs in `control.tar.gz`. Filled in while the data archive is built,
     /// so the source tree is only walked once.
     md5sums: HashMap<String, String>,
+    mtime: u64,
+    created_dirs: HashSet<String>
 }
 
 impl DebianBuild {
@@ -54,6 +57,8 @@ impl DebianBuild {
             tar_header: None,
             tar_root_path: PathBuf::from("usr/lib/python3/dist-packages"),
             md5sums: HashMap::new(),
+            mtime: 0,
+            created_dirs: HashSet::new()
         }
     }
 
@@ -63,9 +68,13 @@ impl DebianBuild {
         self.source_path = self.current_path.join(&self.package.src);
         if !source_path.exists() {
             bail!("Cannot find source path!");
-        } 
+        }
 
-        //TODO data archive to fn
+        self.mtime = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
         self.create_data_archive().context("Unable to create data.tar.gz")?;
         self.create_control_archive().context("Unable to create control.tar.gz")?;
         self.create_ar_archive().context("Unable to create ar deb")?;
@@ -114,6 +123,7 @@ impl DebianBuild {
         header.set_gid(0);
         header.set_username("0")?;
         header.set_groupname("0")?;
+        header.set_mtime(self.mtime);
 
         self.tar_header = Some(header);
 
@@ -149,7 +159,6 @@ impl DebianBuild {
         }
 
         data_archive.finish()?;
-        // encoder.finish()?;
 
         Ok(())
     }
@@ -171,6 +180,7 @@ impl DebianBuild {
         header.set_gid(0);
         header.set_username("0")?;
         header.set_groupname("0")?;
+        header.set_mtime(self.mtime);
         self.tar_header = Some(header);
 
         let control_path = target_deb_path.join("control");
@@ -256,7 +266,7 @@ esac
     fn append_ar_member<W: Write>(&self, builder: &mut ar::Builder<W>, name: &str, bytes: &[u8]) -> Result<()> {
         let mut header = ar::Header::new(name.as_bytes().to_vec(), bytes.len() as u64);
         header.set_mode(0o100644); // dpkg writes the file-type bits too
-        header.set_mtime(0);
+        header.set_mtime(self.mtime);
         header.set_uid(0);
         header.set_gid(0);
 
@@ -266,10 +276,29 @@ esac
     }
 
     fn write_dir_entry<W: Write>(&mut self, archive: &mut TarBuilder<W>, rel_str: String) -> Result<()> {
+        println!("Create folder {}", rel_str);
+        let mut acc = String::from(".");
+        for segment in rel_str.trim_start_matches("./").trim_end_matches("/").split("/") {
+            if segment.is_empty() {
+                continue;
+            }
+            acc.push('/');
+            acc.push_str(segment);
+
+            if !self.created_dirs.insert(acc.clone()) {
+                continue;
+            }
+
+            self.append_dir(archive, format!("{acc}/"))?;
+        }
+
+        Ok(())
+    }
+
+    fn append_dir<W: Write>(&mut self, archive: &mut TarBuilder<W>, dir: String) -> Result<()> {
         let header = self.tar_header.as_mut().expect("TarHeader doesnt exists");
 
-        println!("Create folder {}", rel_str);
-        let path_bytes = rel_str.as_bytes();
+        let path_bytes = dir.as_bytes();
         let bytes_to_copy = &path_bytes[..std::cmp::min(path_bytes.len(), 100)];
         header.as_mut_bytes()[0..100].fill(0);
         header.as_mut_bytes()[0..bytes_to_copy.len()].copy_from_slice(bytes_to_copy);
@@ -279,9 +308,10 @@ esac
         header.set_mode(0o755);
         header.set_cksum();
 
-        archive.append(header, io::empty())?;
+        archive.append(header, empty())?;
         Ok(())
     }
+
     fn write_file_entry<W: Write>(&mut self, archive: &mut TarBuilder<W>, entry: EntryOption, data_tar: bool) -> Result<()> {
         let path = &entry.path;
         println!("Create file {}", entry.rel_str);
