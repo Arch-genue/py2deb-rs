@@ -1,8 +1,9 @@
+use crate::Verbosity;
 use crate::info::BuildInfo;
 use crate::package::Package;
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::fs;
 use std::io::{Write, empty};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -33,9 +34,14 @@ impl Default for EntryOption {
 }
 
 pub struct DebianBuild {
+    /// Package struct
     package: Package,
+    /// Project path
     current_path: PathBuf,
+    /// Project source path
     source_path: PathBuf,
+    /// Verbosity enum
+    verbosity: Verbosity,
 
     tar_header: Option<TarHeader>,
     tar_root_path: PathBuf,
@@ -45,8 +51,12 @@ pub struct DebianBuild {
     /// needs in `control.tar.gz`. Filled in while the data archive is built,
     /// so the source tree is only walked once.
     md5sums: HashMap<String, String>,
+    /// Build time for all files
     mtime: u64,
-    created_dirs: HashSet<String>
+    /// HashSet for created dirs
+    created_dirs: HashSet<String>,
+    /// Summary files size in data.tar.gz
+    data_bytes: u64
 }
 
 impl DebianBuild {
@@ -55,20 +65,25 @@ impl DebianBuild {
             package, 
             current_path: current_path.clone(),
             source_path: current_path,
+            verbosity: Verbosity::Normal,
             tar_header: None,
             tar_root_path: PathBuf::from("usr/lib/python3/dist-packages"),
             md5sums: HashMap::new(),
             mtime: 0,
-            created_dirs: HashSet::new()
+            created_dirs: HashSet::new(),
+            data_bytes: 0
         }
+    }
+    pub fn with_verbosity(mut self, verbosity: Verbosity) -> Self {
+        self.verbosity = verbosity;
+        self
     }
 
     pub fn build(&mut self) -> Result<BuildInfo> {
         let source_path = self.current_path.join(&self.package.src);
-        println!("Source path: {}", source_path.to_string_lossy().blue());
         self.source_path = self.current_path.join(&self.package.src);
         if !source_path.exists() {
-            bail!("Cannot find source path!");
+            bail!("Cannot find source path");
         }
         
         self.mtime = SystemTime::now()
@@ -90,7 +105,9 @@ impl DebianBuild {
     }
 
     fn create_data_archive(&mut self) -> Result<()> {
-        println!("Create data.tar.gz archive in target/debian");
+        if self.verbosity.is_normal() {
+            eprintln!("{:>13} data.tar.gz archive", "Building".blue());
+        }   
 
         let filename = self.current_path.file_name().and_then(|f| f.to_str()).context("Parent path has no file name")?;
         let dest_name = self.package.dest.clone().unwrap_or(filename.to_string());
@@ -135,43 +152,85 @@ impl DebianBuild {
         self.tar_header = Some(header);
 
         for entry in walker {
-            match entry {
-                Ok(entry) => {
-                    let path = entry.path();
+            let entry = entry.context("Failed to walk the source tree")?;
+            let path = entry.path();
 
-                    let nd_path = path.strip_prefix(&self.source_path)?;
-                    let relative_path = self.tar_root_path.join(nd_path);
-                    if path.is_dir() {
-                        self.write_dir_entry(&mut data_archive, format!("./{}/", relative_path.display()))?;
-                    } else {
-                        self.write_file_entry(&mut data_archive, EntryOption{path: path.to_path_buf(), rel_str: format!("./{}", relative_path.display()), ..Default::default()}, true)?;
-                    }
-                },
-                Err(e) => eprintln!("Glob error: {e}"),
+            let nd_path = path.strip_prefix(&self.source_path).with_context(|| format!("{} is not inside {}", path.display(), self.source_path.display()))?;
+            let relative_path = self.tar_root_path.join(nd_path);
+            if path.is_dir() {
+                self.write_dir_entry(&mut data_archive, format!("./{}/", relative_path.display()))?;
+            } else {
+                self.write_file_entry(&mut data_archive, EntryOption{path: path.to_path_buf(), rel_str: format!("./{}", relative_path.display()), ..Default::default()}, true)?;
             }
         }
-        
+
         // Includes
         let includes = &self.package.include.clone();
         for entry in includes {
             let src_path = self.current_path.join(&entry.src);
-            if !src_path.exists() { //TODO throw error 
-                eprintln!("Include not exists {}", src_path.display());
-                continue
+            if !src_path.exists() {
+                bail!("Include entry not exists {}", src_path.display());
             }
-            let dest_path = entry.resolve_dest(&src_path).expect("Cannot to parse dest in include field"); // TODO !!!!
-            
+            let dest_path = entry.resolve_dest(&src_path).expect("Cannot parse dest in include field");
+
             let chmode = entry.resolve_mode(&src_path).unwrap_or(0o644);
+            self.warn_unexpected_mode(&dest_path, chmode);
             self.write_file_entry(&mut data_archive, EntryOption{path: src_path, rel_str: format!("./{}", dest_path.display()), chmod: chmode}, true)?;
         }
+
+        let count  = self.md5sums.len();
+        eprintln!("{:>15} {} files, {} KiB", "Collected".blue(), count, self.data_bytes / 1024);
 
         data_archive.finish()?;
 
         Ok(())
     }
 
+    /// Warns when a file's mode contradicts where it is being installed.
+    ///
+    /// Neither case stops the build — the mode may well be deliberate — but
+    /// both are almost always a mistake worth seeing: a program under `bin`
+    /// that nobody can run, or a plain data file marked executable, which
+    /// lintian reports too.
+    fn warn_unexpected_mode(&self, dest: &Path, mode: u32) {
+        let dest_str = dest.to_string_lossy();
+        let in_bin_dir = ["bin/", "sbin/"]
+            .iter()
+            .any(|dir| dest_str.contains(dir));
+        let executable = mode & 0o111 != 0;
+
+        if in_bin_dir && !executable {
+            eprintln!(
+                "{:>13} {} is not executable ({:04o}) — nothing under bin/ can run it",
+                "Warning".yellow().bold(),
+                dest_str,
+                mode
+            );
+        } else if !in_bin_dir && executable {
+            eprintln!(
+                "{:>13} {} is executable ({:04o}) but installs outside bin/",
+                "Warning".yellow().bold(),
+                dest_str,
+                mode
+            );
+        }
+
+        // Debian Policy asks for 0755/0644; anything group- or world-writable
+        // is a packaging bug even when the source file has it.
+        if mode & 0o022 != 0 {
+            eprintln!(
+                "{:>13} {} is writable by group or others ({:04o})",
+                "Warning".yellow().bold(),
+                dest_str,
+                mode
+            );
+        }
+    }
+
     fn create_control_archive(&mut self) -> Result<()> {
-        println!("Create control.tar.gz archive in target/debian");
+        if self.verbosity.is_normal() {
+            eprintln!("{:>13} control.tar.gz archive", "Building".blue());
+        }
         let target_deb_path = self.current_path.join("target").join("debian");
         if !target_deb_path.exists() {
             fs::create_dir(&target_deb_path).context("Cannot create target/debian directory")?;
@@ -179,7 +238,7 @@ impl DebianBuild {
 
         let tar_file = fs::File::create(target_deb_path.join("control.tar.gz")).context("Cannot create control.tar.gz file")?;
         let encoder = GzEncoder::new(tar_file, Compression::default());
-        let mut data_archive = TarBuilder::new(encoder);
+        let mut control_archive = TarBuilder::new(encoder);
 
         let mut header = TarHeader::new_gnu();
         header.set_mode(0o755);
@@ -193,6 +252,7 @@ impl DebianBuild {
         let control_path = target_deb_path.join("control");
         fs::write(&control_path, self.package.generate_control()).context("Cannot create control file")?;
 
+        // Collect md5 sums
         let md5sums_path = target_deb_path.join("md5sums");
         let mut md5_strings = String::new();
         for (path, hash) in &self.md5sums {
@@ -201,16 +261,30 @@ impl DebianBuild {
         }
         fs::write(&md5sums_path, md5_strings).context("Cannot create md5sums file")?;
 
-        self.write_file_entry(&mut data_archive, EntryOption{path: control_path, rel_str: "./control".to_string(), ..EntryOption::default()}, false)?;
-        self.write_file_entry(&mut data_archive, EntryOption{path: md5sums_path, rel_str: "./md5sums".to_string(), ..EntryOption::default()}, false)?;
+        self.write_file_entry(&mut control_archive, EntryOption{path: control_path, rel_str: "./control".to_string(), ..EntryOption::default()}, false)?;
+        self.write_file_entry(&mut control_archive, EntryOption{path: md5sums_path, rel_str: "./md5sums".to_string(), ..EntryOption::default()}, false)?;
 
         let scripts = self.create_control_scripts().context("Cannot create control scripts")?;
         for script_path in scripts {
             let filename = script_path.file_name().and_then(|f| f.to_str()).context("Cannot get script filename")?;
-            self.write_file_entry(&mut data_archive, EntryOption{path: script_path.clone(), rel_str: format!("./{}", filename), chmod: 0o755}, false)?;
+            self.write_file_entry(&mut control_archive, EntryOption{path: script_path.clone(), rel_str: format!("./{}", filename), chmod: 0o755}, false)?;
         }
-        
-        data_archive.finish()?;
+        let changelog = &self.package.changelog;
+        if changelog.is_empty() {
+            eprintln!(
+                "{:>14} no changelog set", "Warning".yellow().bold()
+            );
+        } else {
+            let changelog_path = self.current_path.join(changelog);
+            if changelog_path.exists() {
+                //TODO!!! CHANGELOG BUILD
+                // self.write_file_entry(&mut data_archive, EntryOption{path: control_path, rel_str: "./control".to_string(), ..EntryOption::default()}, false)?;
+            } else {
+                eprintln!("{:>14} changelog file not found {}", "Warning".yellow().bold(), changelog_path.display());
+            }
+        }
+
+        control_archive.finish()?;
 
         Ok(())
     }
@@ -237,8 +311,8 @@ esac
         let postinst_path = target_deb_path.join("postinst");
         let prerm_path = target_deb_path.join("prerm");
         
-        fs::write(&postinst_path,  postinst).context("Unable to create postinst script")?;
-        fs::write(&prerm_path,  prerm).context("Unable to create prerm script")?;
+        fs::write(&postinst_path, postinst).context("Unable to create postinst script")?;
+        fs::write(&prerm_path, prerm).context("Unable to create prerm script")?;
         scripts.push(postinst_path);
         scripts.push(prerm_path);
 
@@ -249,7 +323,9 @@ esac
         let target_deb_path = self.current_path.join("target").join("debian");
         let package_name = self.package.get_package_file_name();
         let debian_package_path = target_deb_path.join(&package_name);
-        println!("Create {} in target/debian", package_name);
+        if self.verbosity.is_normal() {
+            eprintln!("{:>13} package {}", "Building".blue(), package_name);
+        }
 
         let mut builder = ar::Builder::new(fs::File::create(&debian_package_path)?);
 
@@ -283,7 +359,9 @@ esac
     }
 
     fn write_dir_entry<W: Write>(&mut self, archive: &mut TarBuilder<W>, rel_str: String) -> Result<()> {
-        println!("{} {}", "Create directory".dimmed(), rel_str.green().dimmed());
+        if self.verbosity.is_verbose() {
+            eprintln!("{} {}", "Create directory".dimmed(), rel_str.green().dimmed());
+        }
         let mut acc = String::from(".");
         for segment in rel_str.trim_start_matches("./").trim_end_matches("/").split("/") {
             if segment.is_empty() {
@@ -320,9 +398,10 @@ esac
     }
 
     fn write_file_entry<W: Write>(&mut self, archive: &mut TarBuilder<W>, entry: EntryOption, data_tar: bool) -> Result<()> {
+        if self.verbosity.is_verbose() {
+            eprintln!("{} {}", "Create file".dimmed(), entry.rel_str.blue().dimmed());
+        }
         let path = &entry.path;
-        println!("{} {}", "Create file".dimmed(), entry.rel_str.blue().dimmed());
-
         let contents = fs::read(path)?;
 
         // md5sums and Installed-Size describe the payload only, so they are
@@ -334,7 +413,9 @@ esac
                 .map(|byte| format!("{byte:02x}"))
                 .collect();
             self.md5sums.insert(entry.rel_str.clone(), hex);
-            self.package.installed_size += contents.len().div_ceil(1024) as u64;
+            let size = contents.len();
+            self.package.installed_size += size.div_ceil(1024) as u64;
+            self.data_bytes += size as u64;
         }
 
         let header = self.tar_header.as_mut().expect("TarHeader doesnt exists");

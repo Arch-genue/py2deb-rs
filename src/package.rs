@@ -25,11 +25,11 @@ pub struct Package {
     #[serde(deserialize_with = "validate_package_name")]
     pub package: String,
     /// Package version
-    version: String,
+    pub version: String,
 
     #[serde(default = "default_arch")]
     /// Target architecture, default = all 
-    arch: Architecture,
+    arch: Architecture, // TODO!!! Check for binary files in project
     /// Maintainer
     #[serde(deserialize_with = "validate_maintainer")]
     maintainer: String,
@@ -56,11 +56,16 @@ pub struct Package {
     /// Dpkg section
     section: String,
     #[serde(default)]
-    /// Dpkg priority (//TODO!!, optional)
+    /// Dpkg priority (//TODO!! VALIDATION, optional)
     priority: String,
     #[serde(default)]
+    /// Changelog file path (relative!)
+    pub changelog: String,
+
+    // Runtime fields here
+    #[serde(default)]
     /// Dpkg installed size, update automatically
-    pub installed_size: u64
+    pub installed_size: u64,
 }
 
 fn validate_package_name<'de, D>(d: D) -> Result<String, D::Error>
@@ -187,7 +192,8 @@ impl Package {
             description: description.into(),
             section: "".into(),
             priority: "optional".into(),
-            installed_size: 0
+            changelog: "".into(),
+            installed_size: 0,
         }
     }
     pub fn get_package_file_name(&self) -> String {

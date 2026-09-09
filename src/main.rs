@@ -22,6 +22,10 @@ use deb::build::DebianBuild;
 struct CliArgs {
     #[arg(long, value_name="PATH")]
     path: Option<String>,
+    #[arg(short, long, global = true)]
+    quiet: bool,
+    #[arg(short, long, action = clap::ArgAction::Count, conflicts_with = "quiet")]
+    verbose: u8,
 
     #[command(subcommand)]
     command: Option<Commands>,
@@ -37,8 +41,35 @@ enum Commands {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
+pub enum Verbosity {
+    /// Only the final result on stdout.
+    Quiet,
+    /// Progress lines, the default.
+    #[default]
+    Normal,
+    /// Every archive entry as it is written.
+    Verbose,
+}
+
+impl Verbosity {
+    pub fn from_flags(quiet: bool, verbose: u8) -> Self {
+        match (quiet, verbose) {
+            (true, _) => Self::Quiet,
+            (_, 0) => Self::Normal,
+            _ => Self::Verbose,
+        }
+    }
+
+    /// Whether progress should be printed at all.
+    pub fn is_normal(self) -> bool { self >= Self::Normal }
+    /// Whether per-entry detail should be printed.
+    pub fn is_verbose(self) -> bool { self >= Self::Verbose }
+}
+
 fn main() -> Result<()> {
     let cli = CliArgs::parse();
+    let verbosity = Verbosity::from_flags(cli.quiet, cli.verbose);
 
     let mut current_path = env::current_dir()?;
     if let Some(project_path) = cli.path.as_deref() {
@@ -65,9 +96,9 @@ fn main() -> Result<()> {
             let value: toml::Value = toml::from_str(&config_toml)?;
             if let Some(section) = value.get("tool").and_then(|t| t.get("py2deb")) {
                 let package: Package = section.clone().try_into()?;
-                eprintln!("Cannot init new project. Current project: \n");
-                println!("{}", package);
-                return Ok(());
+                eprintln!("Current project: \n");
+                eprintln!("{}", package);
+                bail!("Cannot init new project");
             }
 
             let mut table: Table = config_toml.parse()?;
@@ -95,12 +126,19 @@ fn main() -> Result<()> {
             let value: toml::Value = toml::from_str(&config_toml).context("Invalid config file")?;
             let section = value.get("tool").and_then(|t| t.get("py2deb")).with_context(|| "Cannot find [tool.py2deb] section. Init project first".to_string())?;
             let package: Package = section.clone().try_into()?;
-            println!("Building Debian package");
-            println!("{}", package);
-            let mut build = DebianBuild::new(package, current_path);
+            
+            if verbosity.is_verbose() {
+                eprintln!("{}", package);
+            }
+            if verbosity.is_normal() {
+                eprintln!("{:>12} {} {} ({})", "Packaging".green(), package.package, package.version, current_path.display());
+            }
+            let mut build = DebianBuild::new(package, current_path).with_verbosity(verbosity);
             let build_info = build.build()?;
-
-            println!("{} target in {:.2?}", "Finished".green(), build_info.time);
+            if verbosity.is_normal() {
+                let file_size = fs::metadata(&build_info.deb_path)?.len();
+                eprintln!("{:>12} target in {:.2?} ({} KiB)", "Finished".green(), build_info.time, file_size / 1024);
+            }
             println!("{}", build_info.deb_path.display());
         },
         None => {}
