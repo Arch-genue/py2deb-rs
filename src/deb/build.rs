@@ -179,7 +179,9 @@ impl DebianBuild {
         }
 
         let count  = self.md5sums.len();
-        eprintln!("{:>15} {} files, {} KiB", "Collected".blue(), count, self.data_bytes / 1024);
+        if self.verbosity.is_normal() {
+            eprintln!("{:>15} {} files, {} KiB", "Collected".blue(), count, self.data_bytes / 1024);
+        }
 
         data_archive.finish()?;
 
@@ -201,14 +203,14 @@ impl DebianBuild {
 
         if in_bin_dir && !executable {
             eprintln!(
-                "{:>13} {} is not executable ({:04o}) — nothing under bin/ can run it",
+                "{:>14} {} is not executable ({:04o}) — nothing under bin/ can run it",
                 "Warning".yellow().bold(),
                 dest_str,
                 mode
             );
         } else if !in_bin_dir && executable {
             eprintln!(
-                "{:>13} {} is executable ({:04o}) but installs outside bin/",
+                "{:>14} {} is executable ({:04o}) but installs outside bin/",
                 "Warning".yellow().bold(),
                 dest_str,
                 mode
@@ -219,7 +221,7 @@ impl DebianBuild {
         // is a packaging bug even when the source file has it.
         if mode & 0o022 != 0 {
             eprintln!(
-                "{:>13} {} is writable by group or others ({:04o})",
+                "{:>14} {} is writable by group or others ({:04o})",
                 "Warning".yellow().bold(),
                 dest_str,
                 mode
