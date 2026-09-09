@@ -22,6 +22,7 @@ pub struct IncludeEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Package {
     /// Deb package name
+    #[serde(deserialize_with = "validate_package_name")]
     pub package: String,
     /// Package version
     version: String,
@@ -30,6 +31,7 @@ pub struct Package {
     /// Target architecture, default = all 
     arch: Architecture,
     /// Maintainer
+    #[serde(deserialize_with = "validate_maintainer")]
     maintainer: String,
     #[serde(default)]
     /// Dpkg depends list
@@ -60,6 +62,49 @@ pub struct Package {
     /// Dpkg installed size, update automatically
     pub installed_size: u64
 }
+
+fn validate_package_name<'de, D>(d: D) -> Result<String, D::Error>
+where D: serde::Deserializer<'de> {
+    use serde::de::Error;
+    let raw = String::deserialize(d)?;
+
+    if raw.len() < 2 {
+        return Err(D::Error::custom("package name must be at least 2 characters"));
+    }
+
+    if !raw.chars().next().unwrap().is_ascii_alphanumeric() {
+        return Err(D::Error::custom(
+            format!("package name must start with a letter or digit, got `{raw}`")
+        ));
+    }
+    if !raw.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "+-.".contains(c)) {
+        return Err(D::Error::custom(
+            format!("package name may only certain a-z, 0-9, +, -, . - got `{raw}`")
+        ));
+    }
+
+    Ok(raw)
+}
+
+fn validate_maintainer<'de, D>(d: D) -> Result<String, D::Error>
+where D: serde::Deserializer<'de> {
+    use serde::de::Error;
+    let raw = String::deserialize(d)?;
+    if raw.is_empty() {
+        return Err(D::Error::custom(
+            "maintainer must not be empty; dpkg requires it as `Name <you@example.com>`",
+        ));
+    }
+
+    if !raw.contains('<') {
+        return Err(D::Error::custom(
+            format!("maintainer must include an email in angle brackets: `Name <you@example.com>` got - `{raw}`")
+        ));
+    }
+
+    Ok(raw)
+}
+
 fn default_arch() -> Architecture {
     Architecture::All
 }
