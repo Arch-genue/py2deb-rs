@@ -593,15 +593,14 @@ fn strip_inline_markup(line: &str) -> String {
             // link — `[![alt](img)](href)` — so the inner image is skipped
             // first, which leaves the outer link with nothing to contribute.
             '[' => {
-                if chars.get(i + 1) == Some(&'!') && chars.get(i + 2) == Some(&'[') {
-                    if let Some(inner_end) = closing_link(&chars, i + 2) {
-                        // Step over the image, then over the link closing it.
-                        i = match closing_link_from(&chars, inner_end) {
-                            Some(end) => end,
-                            None => inner_end,
-                        };
-                        continue;
-                    }
+                if chars.get(i + 1) == Some(&'!') && chars.get(i + 2) == Some(&'[') 
+                    && let Some(inner_end) = closing_link(&chars, i + 2) {
+                    // Step over the image, then over the link closing it.
+                    i = match closing_link_from(&chars, inner_end) {
+                        Some(end) => end,
+                        None => inner_end,
+                    };
+                    continue;
                 }
 
                 match link_text(&chars, i) {

@@ -419,10 +419,8 @@ impl DebianBuild {
             let chmode = entry.resolve_mode(path).unwrap_or(0o644);
             self.warn_unexpected_mode(&target, chmode);
 
-            if let Some(parent) = target.parent() {
-                if !parent.as_os_str().is_empty() {
-                    self.write_dir_entry(archive, format!("./{}/", parent.display()))?;
-                }
+            if let Some(parent) = target.parent() && !parent.as_os_str().is_empty() {
+                self.write_dir_entry(archive, format!("./{}/", parent.display()))?;
             }
 
             self.write_file_entry(
@@ -458,10 +456,8 @@ impl DebianBuild {
         }
 
         // The directory holding the link may belong to no other entry.
-        if let Some(parent) = link.parent() {
-            if !parent.as_os_str().is_empty() {
-                self.write_dir_entry(archive, format!("./{}/", parent.display()))?;
-            }
+        if let Some(parent) = link.parent() && !parent.as_os_str().is_empty() {
+            self.write_dir_entry(archive, format!("./{}/", parent.display()))?;
         }
 
         let header = self.tar_header.as_mut().expect("TarHeader doesnt exists");
