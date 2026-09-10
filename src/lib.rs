@@ -11,6 +11,7 @@ pub mod git;
 pub mod include_entry;
 pub mod info;
 pub mod package;
+pub mod symlink_entry;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub enum Verbosity {

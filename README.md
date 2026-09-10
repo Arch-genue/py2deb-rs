@@ -73,9 +73,97 @@ dependencies = [
 | `dependencies` | no | Debian package names for the `Depends` field. |
 | `description` | no | Synopsis on the first line, extended description after a blank line. |
 | `description_file` | no | Path to a file holding the description, default `README.md`. Used when `description` is empty. |
+| `symlinks` | no | `[target, link]` pairs, in `ln -s` order. |
+| `maintainer-scripts` | no | Directory holding maintainer scripts; a `build` script there runs before packaging. |
 | `changelog` | no | `$git` / `$git(N)` to build one from git, or a path to a changelog written by hand. |
 | `distribution` | no | Suite the entries are released to, default `unstable`. |
 | `urgency` | no | `low`, `medium`, `high`, `emergency` or `critical`, default `medium`. |
+
+### Build script
+
+`maintainer-scripts` names a directory of scripts. A `build` script found there
+runs **before** the package is assembled, with the project as its working
+directory:
+
+```toml
+maintainer-scripts = "debian"
+```
+
+```sh
+#!/bin/sh
+set -e
+pyinstaller --onefile src/main.py     # whatever has to happen first
+```
+
+A non-zero exit stops the packaging — continuing would ship whatever stale
+files happened to be on disk. The script must be executable; `py2deb` refuses
+rather than guessing if it is not.
+
+Both of the script's streams go to stderr, unbuffered, so a long build stays
+visible as it runs. Its stdout is redirected there rather than inherited,
+because `py2deb`'s own stdout carries the path of the finished package and
+nothing else — `DEB=$(py2deb build)` keeps working whatever the script prints.
+
+Three variables are set for it: `PY2DEB_PACKAGE`, `PY2DEB_VERSION` and
+`PY2DEB_PROJECT`.
+
+The source directory is checked *after* the script runs, so `src` may be
+something the script generates.
+
+### Packaging files other than a Python module
+
+`src = "$skip"` skips the copy into `dist-packages` entirely, leaving `include`
+to say what the package contains. This is what a package wraps a binary or an
+AppImage with, rather than an importable module:
+
+```toml
+src = "$skip"
+include = [
+    ["dist/gvcp.AppImage", "opt/gvcp.AppImage", "0755"],
+]
+symlinks = [
+    ["opt/gvcp.AppImage", "usr/bin/gvcp"],
+]
+```
+
+An `include` source may be a file or a directory; a directory is copied
+recursively, reproducing its tree under the destination the way `cp -r` would.
+A destination ending in `/` keeps the source name, anything else renames.
+
+### What never gets packaged
+
+The source tree and every included directory are filtered by the same three
+rules, because a file that is junk in one is junk in the other:
+
+1. `.gitignore` — what the project already declares as not-source;
+2. `exclude` from the config, for what is tracked but should not ship;
+3. a built-in list of build residue.
+
+The built-in list covers `__pycache__/`, `*.pyc`/`*.pyo`, `*.egg-info/`, VCS
+metadata (`.git/`, `.hg/`, `.svn/`), tool caches (`.mypy_cache/`,
+`.pytest_cache/`, `.ruff_cache/`, `.tox/`, `.coverage`) and editor droppings
+(`.DS_Store`, `*.swp`, `*~`).
+
+Bytecode is the one that matters rather than merely tidying: `py3compile`
+regenerates `.pyc` files on the target at install time, so shipping the build
+machine's copies means either a conflict or files compiled for an interpreter
+that is not installed there.
+
+A directory left empty by filtering is dropped rather than shipped as a stub.
+
+### Symlinks
+
+`symlinks` takes `[target, link]` pairs, in the order `ln -s` reads them, so
+the entry above puts a `gvcp` command on the path pointing at the AppImage.
+
+Whether the link is written absolute or relative is decided per Policy 10.5,
+which lintian enforces from both sides: links crossing between top-level
+directories are absolute (`usr/bin/gvcp -> /opt/gvcp.AppImage`), links within
+one are relative (`usr/bin/gvcp-run -> ../lib/gvcp/run`). A target written
+absolute in the config is kept that way.
+
+Links are archive entries in their own right — dpkg creates them at unpack
+time — so they carry no md5sum and add nothing to `Installed-Size`.
 
 ### Versioning from git
 
@@ -231,9 +319,10 @@ correctly on someone else's machine.
 
 ### Reliability
 
-- **Tests.** Forty integration tests under `tests/` cover changelog rendering,
-  the `$git` directive, description handling, git versioning and placeholder
-  expansion. Archive layout,
+- **Tests.** Sixty-five integration tests under `tests/` cover changelog
+  rendering, the `$git` directive, description handling, git versioning,
+  symlinks, exclude filtering, placeholder expansion, and end-to-end packaging
+  read back with `dpkg-deb`. Archive layout,
   control generation and the config parser are still uncovered; a test that
   builds a fixture package and inspects it with `dpkg-deb` would have caught
   most of what was found by hand during development.

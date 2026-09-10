@@ -1,5 +1,6 @@
 use std::{path::PathBuf, time::Duration};
 
+#[derive(Debug)]
 pub struct BuildInfo {
     pub deb_path: PathBuf,
     pub time: Duration

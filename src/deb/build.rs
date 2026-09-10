@@ -1,11 +1,13 @@
 use crate::{Verbosity, git};
 use crate::include_entry::IncludeEntry;
+use crate::symlink_entry::SymlinkEntry;
 use crate::info::BuildInfo;
 use crate::package::Package;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::fs;
+use std::process::{Command, Stdio};
 use std::io::{Write, empty};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -18,6 +20,33 @@ use tar::{Header as TarHeader, Builder as TarBuilder};
 use md5::{Md5, Digest};
 
 use colored::Colorize;
+
+/// Build residue that never belongs in a package, filtered from the source
+/// tree and from included directories alike.
+///
+/// Bytecode is the important one: `py3compile` regenerates `.pyc` files on the
+/// target at install time, so shipping the build machine's copies means either
+/// a conflict or files matching an interpreter that is not there. The rest —
+/// VCS metadata, editor droppings, test and coverage caches — is noise that
+/// merely inflates the package.
+const ALWAYS_EXCLUDED: &[&str] = &[
+    "__pycache__/",
+    "*.py[cod]",
+    "*.egg-info/",
+    ".git/",
+    ".gitignore",
+    ".gitattributes",
+    ".hg/",
+    ".svn/",
+    ".mypy_cache/",
+    ".pytest_cache/",
+    ".ruff_cache/",
+    ".tox/",
+    ".coverage",
+    ".DS_Store",
+    "*.swp",
+    "*~",
+];
 
 struct EntryOption {
     path: PathBuf,
@@ -88,18 +117,24 @@ impl DebianBuild {
     }
 
     pub fn build(&mut self) -> Result<BuildInfo> {
-        let source_path = self.current_path.join(&self.package.src);
         self.source_path = self.current_path.join(&self.package.src);
-        if !source_path.exists() {
-            bail!("Cannot find source path");
-        }
-        
+
         self.mtime = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        
+
         let started = Instant::now();
+
+        // Before the source check: generating what gets packaged is the main
+        // reason to have a build script, so `src` need not exist until it has
+        // run.
+        self.run_build_script().context("Build script failed")?;
+
+        if !self.package.skips_source() && !self.source_path.exists() {
+            bail!("Cannot find source path {}", self.source_path.display());
+        }
+
         self.build_data_archive().context("Unable to create data.tar.gz")?;
         self.build_control_archive().context("Unable to create control.tar.gz")?;
         let deb_path = self.build_ar_archive().context("Unable to create ar deb")?;
@@ -112,32 +147,96 @@ impl DebianBuild {
         Ok(build_info)
     }
 
+    /// Runs the `build` script from `maintainer-scripts`, if there is one.
+    ///
+    /// This is the hook for whatever has to happen before the payload exists —
+    /// compiling an extension, bundling an AppImage, generating assets. It runs
+    /// with the project as its working directory.
+    ///
+    /// Both of its streams go to stderr, unbuffered, so a long build stays
+    /// visible as it runs. Its stdout is redirected there too rather than
+    /// inherited: this tool's own stdout carries the path of the finished
+    /// package and nothing else, so `DEB=$(py2deb build)` keeps working
+    /// whatever the script chooses to print.
+    ///
+    /// A non-zero exit stops the packaging: continuing would ship whatever
+    /// stale files happened to be on disk, which is worse than not building.
+    fn run_build_script(&self) -> Result<()> {
+        let Some(script) = self.maintainer_script("build") else {
+            return Ok(());
+        };
+
+        if !is_executable(&script) {
+            bail!(
+                "{} is not executable; run `chmod +x` on it",
+                script.display()
+            );
+        }
+
+        if self.verbosity.is_normal() {
+            eprintln!("{:>13} {}", "Running".blue(), script.display());
+        }
+
+        let status = Command::new(&script)
+            .current_dir(&self.current_path)
+            // Anything the script prints belongs on stderr: stdout is reserved
+            // for the path of the built package.
+            .stdout(Stdio::from(std::io::stderr()))
+            .stderr(Stdio::inherit())
+            // The script may well want to know what it is building.
+            .env("PY2DEB_PACKAGE", &self.package.package)
+            .env("PY2DEB_VERSION", &self.package.version)
+            .env("PY2DEB_PROJECT", &self.current_path)
+            .status()
+            .with_context(|| format!("Cannot run {}", script.display()))?;
+
+        if !status.success() {
+            match status.code() {
+                Some(code) => bail!("{} exited with status {}", script.display(), code),
+                None => bail!("{} was killed by a signal", script.display()),
+            }
+        }
+
+        Ok(())
+    }
+
+    /// The path to a named maintainer script, when the directory is configured
+    /// and actually holds one.
+    fn maintainer_script(&self, name: &str) -> Option<PathBuf> {
+        let dir = self.package.maintainer_scripts.trim();
+        if dir.is_empty() {
+            return None;
+        }
+
+        let path = self.current_path.join(dir).join(name);
+        path.is_file().then_some(path)
+    }
+
     fn build_data_archive(&mut self) -> Result<()> {
         if self.verbosity.is_normal() {
             eprintln!("{:>13} data.tar.gz archive", "Building".blue());
         }   
 
-        let filename = self.current_path.file_name().and_then(|f| f.to_str()).context("Parent path has no file name")?;
-        let dest_name = self.package.dest.clone().unwrap_or(filename.to_string());
-        
-        if dest_name.is_empty() {
-            bail!("Destination name is empty!");
-        }
-        self.tar_root_path = self.tar_root_path.join(&dest_name);
+        // `src = "$skip"` packages nothing into dist-packages; the contents
+        // come from `include` alone. Useful for a package that ships a binary
+        // or an AppImage rather than an importable Python module.
+        let skip_source = self.package.skips_source();
 
-        let mut overrides = OverrideBuilder::new(&self.source_path);
-        for exclude_rule in &self.package.exclude {
-            let exclude_item = &("!".to_owned()+exclude_rule);
-            overrides.add(exclude_item)?;
+        if !skip_source {
+            let filename = self.current_path.file_name().and_then(|f| f.to_str()).context("Parent path has no file name")?;
+            let dest_name = self.package.dest.clone().unwrap_or(filename.to_string());
+
+            if dest_name.is_empty() {
+                bail!("Destination name is empty!");
+            }
+            self.tar_root_path = self.tar_root_path.join(&dest_name);
         }
 
-        let walker = WalkBuilder::new(&self.source_path)
-            .hidden(false)
-            .git_ignore(true)
-            .git_global(false)
-            .git_exclude(false)
-            .overrides(overrides.build()?)
-            .build();
+        let walker = if skip_source {
+            None
+        } else {
+            Some(self.walk(&self.source_path)?)
+        };
 
         let target_deb_path = self.current_path.join("target").join("debian");
         self.target_deb_path = self.current_path.join("target").join("debian");
@@ -160,7 +259,7 @@ impl DebianBuild {
 
         self.tar_header = Some(header);
 
-        for entry in walker {
+        for entry in walker.into_iter().flatten() {
             let entry = entry.context("Failed to walk the source tree")?;
             let path = entry.path();
 
@@ -214,18 +313,27 @@ impl DebianBuild {
             }
             let dest_path = entry.resolve_dest(&src_path, &self.package).context("Cannot resolve dest in include field")?;
 
+            if src_path.is_dir() {
+                self.include_directory(&mut data_archive, entry, &src_path, &dest_path)?;
+                continue;
+            }
+
             let chmode = entry.resolve_mode(&src_path).unwrap_or(0o644);
             self.warn_unexpected_mode(&dest_path, chmode);
 
             // An include may land anywhere, so its parents are not covered by
             // the walk above; dpkg needs every one of them present.
-            if let Some(parent) = dest_path.parent() {
-                if !parent.as_os_str().is_empty() {
-                    self.write_dir_entry(&mut data_archive, format!("./{}/", parent.display()))?;
-                }
+            if let Some(parent) = dest_path.parent() && !parent.as_os_str().is_empty() {
+                self.write_dir_entry(&mut data_archive, format!("./{}/", parent.display()))?;
             }
 
             self.write_file_entry(&mut data_archive, EntryOption{path: src_path, rel_str: format!("./{}", dest_path.display()), chmod: chmode}, true)?;
+        }
+
+        // After the includes, so anything a link points at is already present.
+        let symlinks = self.package.symlinks.clone();
+        for entry in &symlinks {
+            self.write_symlink_entry(&mut data_archive, entry)?;
         }
 
         let count  = self.md5sums.len();
@@ -234,6 +342,146 @@ impl DebianBuild {
         }
 
         data_archive.finish()?;
+
+        Ok(())
+    }
+
+    /// A directory walk filtered the way every part of the package expects.
+    ///
+    /// Three rules apply, and they apply identically to the source tree and to
+    /// an included directory — a file that would be junk in one is junk in the
+    /// other:
+    ///
+    /// * `.gitignore` — what the project already declares as not-source;
+    /// * `exclude` from the config, for what is tracked but should not ship;
+    /// * [`ALWAYS_EXCLUDED`], build residue that belongs in no package.
+    ///
+    /// Later rules win over earlier ones, so an `exclude` entry cannot be
+    /// undone by `.gitignore` and vice versa.
+    fn walk(&self, root: &Path) -> Result<ignore::Walk> {
+        let mut overrides = OverrideBuilder::new(root);
+
+        for rule in ALWAYS_EXCLUDED {
+            overrides
+                .add(&format!("!{rule}"))
+                .with_context(|| format!("Cannot apply the built-in exclude `{rule}`"))?;
+        }
+
+        for rule in &self.package.exclude {
+            overrides
+                .add(&("!".to_owned() + rule))
+                .with_context(|| format!("`{rule}` is not a valid exclude pattern"))?;
+        }
+
+        Ok(WalkBuilder::new(root)
+            .hidden(false)
+            .git_ignore(true)
+            .git_global(false)
+            .git_exclude(false)
+            .require_git(false)
+            .overrides(overrides.build().context("Cannot build the exclude rules")?)
+            .build())
+    }
+
+    /// Copies an included directory into the archive, recursively.
+    ///
+    /// The tree is reproduced under `dest`, so `["assets", "usr/share/x/"]`
+    /// puts `assets/icons/a.png` at `usr/share/x/assets/icons/a.png` — the
+    /// same thing `cp -r` would do. An explicit mode in the config applies to
+    /// the files; directories always get 0755, since a directory a user cannot
+    /// enter makes its contents unreachable.
+    fn include_directory<W: Write>(
+        &mut self,
+        archive: &mut TarBuilder<W>,
+        entry: &IncludeEntry,
+        src_root: &Path,
+        dest_root: &Path,
+    ) -> Result<()> {
+        let walker = self.walk(src_root)?;
+
+        for found in walker {
+            let found = found.with_context(|| format!("Failed to walk {}", src_root.display()))?;
+            let path = found.path();
+
+            let relative = path
+                .strip_prefix(src_root)
+                .with_context(|| format!("{} is not inside {}", path.display(), src_root.display()))?;
+            let target = dest_root.join(relative);
+
+            // Directories are not written on sight: one whose contents are
+            // entirely filtered out would otherwise ship as an empty stub.
+            // Every file writes its own parents below, so a directory that
+            // keeps anything still appears.
+            if path.is_dir() {
+                continue;
+            }
+
+            let chmode = entry.resolve_mode(path).unwrap_or(0o644);
+            self.warn_unexpected_mode(&target, chmode);
+
+            if let Some(parent) = target.parent() {
+                if !parent.as_os_str().is_empty() {
+                    self.write_dir_entry(archive, format!("./{}/", parent.display()))?;
+                }
+            }
+
+            self.write_file_entry(
+                archive,
+                EntryOption {
+                    path: path.to_path_buf(),
+                    rel_str: format!("./{}", target.display()),
+                    chmod: chmode,
+                },
+                true,
+            )?;
+        }
+
+        Ok(())
+    }
+
+    /// Writes one symbolic link into the data archive.
+    ///
+    /// The link is an archive entry in its own right, not a file copied from
+    /// the build machine: dpkg creates it at unpack time. It carries no
+    /// md5sum — there is no content to hash — and no size, which is why
+    /// `Installed-Size` is unaffected.
+    fn write_symlink_entry<W: Write>(
+        &mut self,
+        archive: &mut TarBuilder<W>,
+        entry: &SymlinkEntry,
+    ) -> Result<()> {
+        let link = entry.resolve_link(&self.package);
+        let target = entry.resolve_target(&self.package, &link);
+
+        if self.verbosity.is_verbose() {
+            eprintln!("{:>15} {} -> {}", "Linking".blue(), link.display(), target.display());
+        }
+
+        // The directory holding the link may belong to no other entry.
+        if let Some(parent) = link.parent() {
+            if !parent.as_os_str().is_empty() {
+                self.write_dir_entry(archive, format!("./{}/", parent.display()))?;
+            }
+        }
+
+        let header = self.tar_header.as_mut().expect("TarHeader doesnt exists");
+
+        let path = format!("./{}", link.display());
+        let path_bytes = path.as_bytes();
+        let bytes_to_copy = &path_bytes[..std::cmp::min(path_bytes.len(), 100)];
+        header.as_mut_bytes()[0..100].fill(0);
+        header.as_mut_bytes()[0..bytes_to_copy.len()].copy_from_slice(bytes_to_copy);
+
+        header.set_entry_type(tar::EntryType::Symlink);
+        header.set_size(0);
+        // Policy 10.9: a symlink's own mode is not used, and 0777 is what
+        // dpkg and every other packaging tool writes.
+        header.set_mode(0o777);
+        header.set_link_name(&target)
+            .with_context(|| format!("Cannot point {} at {}", link.display(), target.display()))?;
+        header.set_cksum();
+
+        archive.append(header, empty())?;
 
         Ok(())
     }
@@ -716,4 +964,13 @@ fn license_needs_no_author(name: &str) -> bool {
     ["UNLICENSED", "PROPRIETARY", "CC-PDDC", "CC0-1.0"]
         .iter()
         .any(|l| l.eq_ignore_ascii_case(name))
+}
+
+/// Whether a file carries any execute bit.
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::metadata(path)
+        .map(|m| m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
 }

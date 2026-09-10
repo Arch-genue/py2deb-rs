@@ -6,6 +6,7 @@ use std::{
 
 use super::architecture::Architecture;
 use super::include_entry::IncludeEntry;
+use super::symlink_entry::SymlinkEntry;
 
 use anyhow::{Context, Result};
 use colored::Colorize;
@@ -66,6 +67,11 @@ pub struct Package {
     #[serde(default)]
     /// Exclude files or directories with pattern
     pub exclude: Vec<String>,
+    #[serde(default)]
+    /// Symbolic links to create in the package, as `[target, link]` — the
+    /// order `ln -s` takes, so `["opt/gvcp.AppImage", "usr/bin/gvcp"]` puts a
+    /// `gvcp` command on the path pointing at the AppImage.
+    pub symlinks: Vec<SymlinkEntry>,
 
     #[serde(default)]
     /// Package description. The first line is the synopsis, anything after a
@@ -84,6 +90,10 @@ pub struct Package {
     #[serde(default)]
     /// Dpkg priority (//TODO!! VALIDATION, required, optional)
     priority: String,
+    #[serde(default, rename = "maintainer-scripts", alias = "maintainer_scripts")]
+    /// Directory holding maintainer scripts, relative to the project root.
+    /// A `build` script found there runs before the package is assembled.
+    pub maintainer_scripts: String,
     #[serde(default)]
     /// Changelog file path (relative!), or `$git` / `$git(N)` to build one
     /// from the repository's tags and commits.
@@ -170,10 +180,12 @@ impl Package {
             dest: None,
             include: Vec::new(),
             exclude: Vec::new(),
+            symlinks: Vec::new(),
             description: description.into(),
             description_file: "README.md".into(),
             section: "".into(),
             priority: "optional".into(),
+            maintainer_scripts: "".into(),
             changelog: "$git".into(),
             distribution: "unstable".into(),
             urgency: "medium".into(),
@@ -196,6 +208,12 @@ impl Package {
     pub fn get_package_file_name(&self) -> String {
         format!("{}_{}_{}.deb", self.package, self.version, self.arch)
     }
+    /// Whether `src` is the `$skip` sentinel, meaning nothing is packaged from
+    /// the source tree and the payload comes from `include` alone.
+    pub fn skips_source(&self) -> bool {
+        self.src.trim().eq_ignore_ascii_case("$skip")
+    }
+
     /// The changelog's distribution, validated against what Debian accepts.
     ///
     /// An unknown value is passed through rather than rejected — derivatives
