@@ -219,6 +219,75 @@ pub fn civil_from_days(z: i64) -> (i64, u32, u32) {
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
+/// What the working tree looks like relative to the last release.
+#[derive(Debug, Clone)]
+pub struct Describe {
+    /// Commits since the newest version tag, 0 when sitting on it.
+    pub distance: u32,
+    /// Abbreviated hash of `HEAD`.
+    pub hash: String,
+    /// Whether tracked files differ from `HEAD`.
+    pub dirty: bool,
+}
+
+/// Describes `HEAD` against the newest version tag.
+///
+/// `git describe` is not used directly: it picks the nearest tag of any shape,
+/// so a `nightly` tag would derail it, and the same `looks_like_version` rule
+/// that drives the changelog has to apply here too.
+pub fn describe(repo: &Path) -> Result<Describe> {
+    let hash = git(repo, &["rev-parse", "--short", "HEAD"])?.trim().to_string();
+    if hash.is_empty() {
+        bail!("the repository has no commits");
+    }
+
+    let distance = match version_tags(repo)?.first() {
+        Some(tag) => git(repo, &["rev-list", "--count", &format!("{tag}..HEAD")])?
+            .trim()
+            .parse()
+            .unwrap_or(0),
+        // With no tags, every commit counts as distance from nothing.
+        None => git(repo, &["rev-list", "--count", "HEAD"])?
+            .trim()
+            .parse()
+            .unwrap_or(0),
+    };
+
+    // `diff-index` needs a refreshed index, or unchanged files whose mtime
+    // moved (a fresh checkout, a touch) read as modified.
+    let _ = git(repo, &["update-index", "--refresh"]);
+    let dirty = git(repo, &["diff-index", "--quiet", "HEAD", "--"]).is_err();
+
+    Ok(Describe { distance, hash, dirty })
+}
+
+/// Appends git's position to `base`, giving every build its own version.
+///
+/// The suffix goes after `+`, which dpkg sorts *after* the bare version and
+/// before the next upstream one — `1.1.8 < 1.1.8+3.gabc1234 < 1.1.9` — so a
+/// development build upgrades cleanly in both directions. The commit count
+/// leads it because dpkg compares digit runs numerically, making `+12.` newer
+/// than `+3.`; two hashes on their own would only sort alphabetically, which
+/// says nothing about which came first.
+///
+/// Sitting exactly on a clean tag returns `base` untouched: that build *is*
+/// the release, and giving it a suffix would make it sort above the version
+/// it claims to be.
+pub fn version_with_commit(base: &str, described: &Describe) -> String {
+    if described.distance == 0 && !described.dirty {
+        return base.to_string();
+    }
+
+    let mut version = format!("{base}+{}.g{}", described.distance, described.hash);
+    if described.dirty {
+        // Uncommitted changes are not reproducible from the hash alone, so the
+        // version says so rather than impersonating that commit.
+        version.push_str(".dirty");
+    }
+
+    version
+}
+
 /// Groups history into releases, newest first.
 ///
 /// `version` is what the package is being built as, and it labels the entry

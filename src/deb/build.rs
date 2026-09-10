@@ -488,7 +488,7 @@ impl DebianBuild {
         self.tar_header = Some(header);
 
         let control_path = target_deb_path.join("control");
-        fs::write(&control_path, self.package.generate_control()).context("Cannot create control file")?;
+        fs::write(&control_path, self.package.generate_control(&self.current_path)).context("Cannot create control file")?;
 
         // Collect md5 sums
         let md5sums_path = target_deb_path.join("md5sums");

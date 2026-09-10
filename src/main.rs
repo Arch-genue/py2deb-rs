@@ -1,4 +1,4 @@
-use std::path::{PathBuf};
+use std::path::{Path, PathBuf};
 use std::env;
 use std::fs;
 
@@ -7,6 +7,7 @@ use anyhow::{Context, Result, bail};
 use toml::{Table, Value};
 use colored::Colorize;
 
+use py2deb::git;
 use py2deb::package::Package;
 use py2deb::deb::build::DebianBuild;
 use py2deb::Verbosity;
@@ -20,6 +21,10 @@ struct CliArgs {
     quiet: bool,
     #[arg(short, long, action = clap::ArgAction::Count, conflicts_with = "quiet")]
     verbose: u8,
+    /// Append the git position to the version, as `1.1.8+3.gabc1234`, so every
+    /// build from an untagged commit gets a version of its own.
+    #[arg(long, global = true)]
+    git_version: bool,
 
     #[command(subcommand)]
     command: Option<Commands>,
@@ -84,7 +89,11 @@ fn main() -> Result<()> {
             if !config_path.exists() {
                 bail!("pyproject.toml not found!");
             }
-            let package = Package::from_config(&config_path)?;
+            let mut package = Package::from_config(&config_path)?;
+
+            if cli.git_version {
+                apply_git_version(&mut package, &project_path, verbosity)?;
+            }
 
             if verbosity.is_normal() {
                 eprintln!("{:>12} {} {} ({})", "Packaging".green(), package.package, package.version, project_path.display());
@@ -105,6 +114,45 @@ fn main() -> Result<()> {
             println!("{}", package);
             eprintln!("Run `py2deb build` to build the .deb package.");
         }
+    }
+
+    Ok(())
+}
+
+/// Rewrites the package version to include git's position.
+///
+/// Refuses rather than guesses when the tree is not a repository: the flag was
+/// asked for explicitly, and silently shipping the plain version would produce
+/// exactly the duplicate the flag exists to avoid.
+fn apply_git_version(package: &mut Package, project_path: &Path, verbosity: Verbosity) -> Result<()> {
+    if !git::is_repository(project_path) {
+        bail!(
+            "--git-version needs a git repository, but {} is not one",
+            project_path.display()
+        );
+    }
+
+    let described = git::describe(project_path)
+        .with_context(|| "Cannot read the git position for --git-version")?;
+
+    let base = package.version.clone();
+    package.version = git::version_with_commit(&base, &described);
+
+    if described.dirty {
+        eprintln!(
+            "{:>12} uncommitted changes; version marked `.dirty`",
+            "Warning".yellow().bold()
+        );
+    }
+
+    if verbosity.is_normal() && package.version != base {
+        eprintln!(
+            "{:>12} version {} from {} + {} commit(s)",
+            "Versioning".green(),
+            package.version,
+            base,
+            described.distance
+        );
     }
 
     Ok(())

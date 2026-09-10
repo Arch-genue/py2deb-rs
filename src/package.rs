@@ -68,11 +68,14 @@ pub struct Package {
     pub exclude: Vec<String>,
 
     #[serde(default)]
-    /// Package description.. or use can use description_file below.
-    /// README.md is used if it is not provided
+    /// Package description. The first line is the synopsis, anything after a
+    /// blank line is the extended description. Takes precedence over
+    /// `description_file`.
     description: String,
     #[serde(default)]
-    /// Package description
+    /// Path to a file holding the description, relative to the project root.
+    /// Read only when `description` is empty; Markdown chrome (headings,
+    /// badges, fences) is stripped, so pointing this at `README.md` works.
     description_file: String,
 
     #[serde(default)]
@@ -287,22 +290,89 @@ impl Package {
 
         out
     }
-    pub fn generate_control(&mut self) -> String {
+    /// The package description, as `(synopsis, extended)`.
+    ///
+    /// `description` wins when set; otherwise `description_file` is read and
+    /// stripped of Markdown, which is what makes the default of `README.md`
+    /// usable. A file that cannot be read is a warning rather than an error —
+    /// the package is still installable, just poorer.
+    fn resolve_description(&self, root: &Path) -> (String, String) {
+        let inline = self.description.trim();
+        if !inline.is_empty() {
+            return split_description(inline);
+        }
+
+        if self.description_file.is_empty() {
+            return (String::new(), String::new());
+        }
+
+        // Relative to the project, not to wherever py2deb was invoked from.
+        let path = root.join(&self.description_file);
+        match fs::read_to_string(&path) {
+            Ok(text) => split_description(&strip_markdown(&text)),
+            Err(error) => {
+                eprintln!(
+                    "{:>15} cannot read description file {}: {}",
+                    "Warning".yellow().bold(),
+                    path.display(),
+                    error
+                );
+                (String::new(), String::new())
+            }
+        }
+    }
+
+    /// Renders the `Description:` field.
+    ///
+    /// Debian's shape is a one-line synopsis followed by an extended
+    /// description indented by a single space, where a blank line is written
+    /// ` .` — a truly empty line would end the field. lintian rejects a
+    /// package whose extended part is missing, so a synopsis with nothing
+    /// after it gets a minimal body rather than none.
+    fn format_description(&self, root: &Path) -> String {
+        let (synopsis, extended) = self.resolve_description(root);
+
+        if synopsis.is_empty() {
+            eprintln!(
+                "{:>15} no description set; add `description` or `description_file` to [tool.py2deb]",
+                "Warning".yellow().bold()
+            );
+            return format!("Description: {}\n .\n", self.package);
+        }
+
+        let mut out = format!("Description: {synopsis}\n");
+        if extended.is_empty() {
+            // Repeating the synopsis is what dh_make does when upstream gives
+            // nothing more; an empty extended part is a lintian error.
+            out.push_str(" .\n");
+        } else {
+            for line in extended.lines() {
+                let line = line.trim_end();
+                if line.is_empty() {
+                    out.push_str(" .\n");
+                } else {
+                    out.push_str(&format!(" {line}\n"));
+                }
+            }
+        }
+
+        out
+    }
+
+    pub fn generate_control(&mut self, root: &Path) -> String {
         let mut control_str = format!("
 Package: {}
 Version: {}
 Architecture: {}
 Maintainer: {}
 Installed-Size: {}
-Priority: {}
-Description: {}\n",
+Priority: {}\n",
             self.package,
             self.version,
             self.arch,
             self.maintainer,
             self.installed_size,
             self.priority,
-            self.description,
         );
         if !self.section.is_empty() {
             control_str.push_str(format!("Section: {}\n", self.section).as_str());
@@ -318,6 +388,10 @@ Description: {}\n",
         if !self.conflicts.is_empty() {
             control_str.push_str(format!("Conflicts: {}\n", self.conflicts.join(", ")).as_str());
         }
+
+        // Last, because its continuation lines would otherwise swallow
+        // whatever field came next.
+        control_str.push_str(&self.format_description(root));
 
         control_str.trim_start().to_string()
     }
@@ -337,4 +411,251 @@ impl fmt::Display for Package {
         }
         Ok(())
     }
+}
+
+/// Splits description text into a synopsis and an extended part.
+///
+/// The synopsis is the first line; the extended description is what follows
+/// the first blank line. Debian asks the synopsis to read as a noun phrase
+/// completing "a package that is…", so a leading article is trimmed —
+/// lintian flags `description-synopsis-starts-with-article`.
+pub fn split_description(text: &str) -> (String, String) {
+    let text = text.trim();
+    if text.is_empty() {
+        return (String::new(), String::new());
+    }
+
+    let mut parts = text.splitn(2, "\n\n");
+    let first = parts.next().unwrap_or_default();
+    let rest = parts.next().unwrap_or_default().trim();
+
+    // A synopsis wrapped across lines is still one line of prose.
+    let paragraph = first.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    // Policy 3.4.1 caps the synopsis at 80 characters, and a README's opening
+    // paragraph is usually longer. Its first sentence is what was meant as the
+    // summary, so the remainder is pushed down into the extended description
+    // rather than truncated away.
+    let (head, tail) = split_first_sentence(&paragraph);
+    let synopsis = trim_article(&head);
+
+    let extended = match (tail.is_empty(), rest.is_empty()) {
+        (true, _) => rest.to_string(),
+        (false, true) => tail,
+        (false, false) => format!("{tail}\n\n{rest}"),
+    };
+
+    (synopsis, extended)
+}
+
+/// Splits prose after its first sentence, leaving the rest for the extended
+/// description.
+///
+/// Only splits when the paragraph actually overruns what a synopsis may hold;
+/// a short opening line is left whole even if it contains a full stop.
+pub fn split_first_sentence(text: &str) -> (String, String) {
+    // Policy 3.4.1 measures the whole line, and `Description: ` is 13 of it.
+    const MAX_SYNOPSIS: usize = 80 - "Description: ".len() - 1;
+
+    if text.chars().count() <= MAX_SYNOPSIS {
+        return (text.to_string(), String::new());
+    }
+
+    // A full stop followed by a space ends a sentence; one inside `0.1` or
+    // `e.g.` does not, so the next character must start a new word.
+    let bytes = text.as_bytes();
+    let mut end = None;
+    for (i, window) in bytes.windows(2).enumerate() {
+        if window[0] == b'.' && window[1] == b' ' {
+            end = Some(i + 1);
+            break;
+        }
+    }
+
+    match end {
+        Some(i) => (text[..i].trim_end_matches('.').trim().to_string(), text[i..].trim().to_string()),
+        // No sentence break: fall back to a word boundary so nothing is lost.
+        None => match text[..].char_indices().take_while(|(i, _)| *i <= MAX_SYNOPSIS).filter(|(_, c)| *c == ' ').last() {
+            Some((i, _)) => (text[..i].trim().to_string(), text[i..].trim().to_string()),
+            None => (text.to_string(), String::new()),
+        },
+    }
+}
+
+/// Drops a leading article, and the trailing full stop Debian does not want.
+pub fn trim_article(synopsis: &str) -> String {
+    let trimmed = synopsis.trim_end_matches('.').trim();
+
+    for article in ["a ", "an ", "the "] {
+        if trimmed.len() > article.len()
+            && trimmed[..article.len()].eq_ignore_ascii_case(article)
+        {
+            return trimmed[article.len()..].trim().to_string();
+        }
+    }
+
+    trimmed.to_string()
+}
+
+/// Reduces Markdown to the plain prose a `Description:` field can hold.
+///
+/// This is deliberately not a Markdown parser: the goal is only to make the
+/// common shape of a README — a title, some badges, a paragraph — usable as a
+/// description. Fenced code, tables and headings carry layout that means
+/// nothing once indented into a control field, so they are dropped; inline
+/// emphasis and links are unwrapped to the text they display.
+pub fn strip_markdown(text: &str) -> String {
+    let mut out: Vec<String> = Vec::new();
+    let mut in_fence = false;
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+
+        // Headings, tables, and horizontal rules are pure layout.
+        if trimmed.starts_with('#')
+            || trimmed.starts_with('|')
+            || is_horizontal_rule(trimmed)
+        {
+            continue;
+        }
+
+        // A badge-only line is a row of images and links with no prose left
+        // once they are removed.
+        let cleaned = strip_inline_markup(trimmed);
+        if cleaned.is_empty() {
+            // Keep the paragraph break a blank line represents, but never
+            // start the description with one.
+            if !out.is_empty() && !out.last().is_some_and(String::is_empty) {
+                out.push(String::new());
+            }
+            continue;
+        }
+
+        out.push(cleaned);
+    }
+
+    while out.last().is_some_and(String::is_empty) {
+        out.pop();
+    }
+
+    out.join("\n")
+}
+
+fn is_horizontal_rule(line: &str) -> bool {
+    line.len() >= 3 && line.chars().all(|c| c == '-' || c == '=' || c == '*')
+}
+
+/// Unwraps links and images to their text and drops emphasis markers.
+fn strip_inline_markup(line: &str) -> String {
+    let chars: Vec<char> = line.chars().collect();
+    let mut out = String::new();
+    let mut i = 0;
+
+    while i < chars.len() {
+        match chars[i] {
+            // `![alt](url)` — an image contributes nothing readable. Its alt
+            // text goes too: on a badge it is a label like "build", which
+            // says nothing about the package.
+            '!' if chars.get(i + 1) == Some(&'[') => match closing_link(&chars, i + 1) {
+                Some(end) => i = end,
+                None => {
+                    out.push(chars[i]);
+                    i += 1;
+                }
+            },
+            // `[text](url)` keeps its text. A badge is an image wrapped in a
+            // link — `[![alt](img)](href)` — so the inner image is skipped
+            // first, which leaves the outer link with nothing to contribute.
+            '[' => {
+                if chars.get(i + 1) == Some(&'!') && chars.get(i + 2) == Some(&'[') {
+                    if let Some(inner_end) = closing_link(&chars, i + 2) {
+                        // Step over the image, then over the link closing it.
+                        i = match closing_link_from(&chars, inner_end) {
+                            Some(end) => end,
+                            None => inner_end,
+                        };
+                        continue;
+                    }
+                }
+
+                match link_text(&chars, i) {
+                    Some((text, end)) => {
+                        out.push_str(&text);
+                        i = end;
+                    }
+                    None => {
+                        out.push(chars[i]);
+                        i += 1;
+                    }
+                }
+            }
+            // Emphasis and inline code are markup, not content.
+            '*' | '_' | '`' => i += 1,
+            c => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The index just past a `[...](...)` starting at `open`, if it is one.
+fn closing_link(chars: &[char], open: usize) -> Option<usize> {
+    let bracket = chars[open..].iter().position(|&c| c == ']')? + open;
+    if chars.get(bracket + 1) != Some(&'(') {
+        return None;
+    }
+    let paren = chars[bracket + 1..].iter().position(|&c| c == ')')? + bracket + 1;
+    Some(paren + 1)
+}
+
+/// The index just past a `](...)` that begins at `at` — the tail of a link
+/// whose text has already been consumed, as with a badge's wrapping link.
+fn closing_link_from(chars: &[char], at: usize) -> Option<usize> {
+    if chars.get(at) != Some(&']') || chars.get(at + 1) != Some(&'(') {
+        return None;
+    }
+    let paren = chars[at + 1..].iter().position(|&c| c == ')')? + at + 1;
+    Some(paren + 1)
+}
+
+/// The display text of a `[text](url)` at `open`, and the index just past it.
+///
+/// The closing bracket is found by depth, so `[see [1]](url)` keeps its whole
+/// text rather than stopping at the first `]`.
+fn link_text(chars: &[char], open: usize) -> Option<(String, usize)> {
+    let mut depth = 0usize;
+    let mut bracket = None;
+
+    for (offset, &c) in chars[open..].iter().enumerate() {
+        match c {
+            '[' => depth += 1,
+            ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    bracket = Some(open + offset);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let bracket = bracket?;
+    if chars.get(bracket + 1) != Some(&'(') {
+        return None;
+    }
+    let paren = chars[bracket + 1..].iter().position(|&c| c == ')')? + bracket + 1;
+
+    Some((chars[open + 1..bracket].iter().collect(), paren + 1))
 }

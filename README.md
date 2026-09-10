@@ -47,6 +47,9 @@ py2deb build
 The resulting `.deb` is named by Debian convention —
 `<package>_<version>_<architecture>.deb`.
 
+Add `--git-version` to stamp the build with its git position, which is what CI
+wants; see [Versioning from git](#versioning-from-git).
+
 ## Configuration
 
 ```toml
@@ -68,9 +71,75 @@ dependencies = [
 | `arch` | no | Target architecture, default `all`. |
 | `maintainer` | no | RFC 822 form: `Name <email>`. Falls back to git config. |
 | `dependencies` | no | Debian package names for the `Depends` field. |
+| `description` | no | Synopsis on the first line, extended description after a blank line. |
+| `description_file` | no | Path to a file holding the description, default `README.md`. Used when `description` is empty. |
 | `changelog` | no | `$git` / `$git(N)` to build one from git, or a path to a changelog written by hand. |
 | `distribution` | no | Suite the entries are released to, default `unstable`. |
 | `urgency` | no | `low`, `medium`, `high`, `emergency` or `critical`, default `medium`. |
+
+### Versioning from git
+
+`version` in `pyproject.toml` is what the package is normally built as. Passing
+`--git-version` appends git's position to it, so that every build from an
+untagged commit gets a version of its own:
+
+```sh
+py2deb build --git-version     # 1.1.8  ->  1.1.8+3.gabc1234
+```
+
+The suffix is the number of commits since the newest version tag, then the
+abbreviated hash. Sitting exactly on a clean tag leaves the version alone —
+that build *is* the release. An uncommitted change adds `.dirty`, because the
+result is not reproducible from the hash.
+
+This is for CI, where a rebuild of the same `version` would otherwise collide
+with what is already published — an APT registry rejects a second upload of a
+version it already has (Gitea answers `409 Conflict`), since `apt` decides what
+to upgrade by comparing versions, not contents.
+
+The ordering it produces is the one dpkg agrees with:
+
+```
+1.1.8  <  1.1.8+3.gabc1234  <  1.1.8+12.gdef5678  <  1.1.9
+```
+
+The commit count leads the suffix deliberately — dpkg compares runs of digits
+numerically, so `+12.` outranks `+3.`, whereas two hashes on their own would
+only sort by spelling. A `+` suffix sorts above the bare version and below the
+next upstream one, so a development build upgrades cleanly in both directions.
+
+`--git-version` fails rather than guesses outside a repository: falling back to
+the plain version would produce exactly the collision the flag exists to avoid.
+The changelog picks up the resulting version automatically.
+
+### Description
+
+Debian's `Description:` is two things in one field: a one-line synopsis, and an
+extended description indented beneath it. `description` supplies both — the
+first line is the synopsis, anything after a blank line is the extended part:
+
+```toml
+description = """
+Keyboard layout switcher for Linux
+
+Works on Wayland and on the bare console, with per-application layout memory.
+"""
+```
+
+`description_file` reads the same thing from a file instead, and defaults to
+`README.md`. A README is written for a different audience, so its Markdown is
+reduced to prose first: headings, tables, horizontal rules and fenced code are
+dropped, badges leave nothing behind, links keep their text, and emphasis
+markers are removed.
+
+Policy caps the synopsis at 80 characters including the `Description: ` prefix,
+which an opening paragraph usually exceeds. The first sentence becomes the
+synopsis and the remainder moves into the extended description, so nothing is
+lost. A leading article and a trailing full stop are trimmed — lintian objects
+to both.
+
+`description` takes precedence when both are set. A file that cannot be read is
+a warning, not a build failure.
 
 ### Changelog
 
@@ -162,8 +231,9 @@ correctly on someone else's machine.
 
 ### Reliability
 
-- **Tests.** Seventeen integration tests under `tests/` cover changelog
-  rendering, the `$git` directive and placeholder expansion. Archive layout,
+- **Tests.** Forty integration tests under `tests/` cover changelog rendering,
+  the `$git` directive, description handling, git versioning and placeholder
+  expansion. Archive layout,
   control generation and the config parser are still uncovered; a test that
   builds a fixture package and inspects it with `dpkg-deb` would have caught
   most of what was found by hand during development.
