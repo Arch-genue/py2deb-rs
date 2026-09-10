@@ -175,10 +175,16 @@ untagged commit gets a version of its own:
 py2deb build --git-version     # 1.1.8  ->  1.1.8+3.gabc1234
 ```
 
-The suffix is the number of commits since the newest version tag, then the
-abbreviated hash. Sitting exactly on a clean tag leaves the version alone —
-that build *is* the release. An uncommitted change adds `.dirty`, because the
-result is not reproducible from the hash.
+The base is the **newest version tag**, not `version` from the config — a tag
+is what declares a release, so tagging `v2.4.4` and rebuilding gives `2.4.4`
+even if the config still says `2.4.3`. The disagreement is reported, since a
+config nobody bumped is usually an oversight. With no version tags in the
+repository at all, the config supplies the base instead.
+
+The suffix is the number of commits since that tag, then the abbreviated hash.
+Sitting exactly on a clean tag leaves the version bare — that build *is* the
+release. An uncommitted change adds `.dirty`, because the result is not
+reproducible from the hash.
 
 This is for CI, where a rebuild of the same `version` would otherwise collide
 with what is already published — an APT registry rejects a second upload of a
@@ -319,7 +325,7 @@ correctly on someone else's machine.
 
 ### Reliability
 
-- **Tests.** Sixty-five integration tests under `tests/` cover changelog
+- **Tests.** Seventy integration tests under `tests/` cover changelog
   rendering, the `$git` directive, description handling, git versioning,
   symlinks, exclude filtering, placeholder expansion, and end-to-end packaging
   read back with `dpkg-deb`. Archive layout,

@@ -110,7 +110,14 @@ fn main() -> Result<()> {
             if !config_path.exists() {
                 bail!("Cannot not find pyproject.toml in `{}`", project_path.display());
             }
-            let package = Package::from_config(&config_path)?;
+            let mut package = Package::from_config(&config_path)?;
+
+            // Worth answering here too: `show` is how you check what a build
+            // would produce without producing it.
+            if cli.git_version {
+                apply_git_version(&mut package, &project_path, Verbosity::Quiet)?;
+            }
+
             println!("{}", package);
             eprintln!("Run `py2deb build` to build the .deb package.");
         }
@@ -135,8 +142,8 @@ fn apply_git_version(package: &mut Package, project_path: &Path, verbosity: Verb
     let described = git::describe(project_path)
         .with_context(|| "Cannot read the git position for --git-version")?;
 
-    let base = package.version.clone();
-    package.version = git::version_with_commit(&base, &described);
+    let configured = package.version.clone();
+    package.version = git::version_with_commit(&configured, &described);
 
     if described.dirty {
         eprintln!(
@@ -145,14 +152,37 @@ fn apply_git_version(package: &mut Package, project_path: &Path, verbosity: Verb
         );
     }
 
-    if verbosity.is_normal() && package.version != base {
-        eprintln!(
-            "{:>12} version {} from {} + {} commit(s)",
-            "Versioning".green(),
-            package.version,
-            base,
-            described.distance
-        );
+    // The tag wins, so a stale `version` in the config is silently overridden.
+    // Say so: the two disagreeing is usually a config nobody updated, and
+    // finding out from the published version is finding out too late.
+    if let Some(tag) = &described.tag {
+        if tag != &configured {
+            eprintln!(
+                "{:>12} tag {} overrides version {} from pyproject.toml",
+                "Warning".yellow().bold(),
+                tag,
+                configured
+            );
+        }
+    }
+
+    if verbosity.is_normal() {
+        match &described.tag {
+            Some(tag) => eprintln!(
+                "{:>12} version {} from tag {} + {} commit(s)",
+                "Versioning".green(),
+                package.version,
+                tag,
+                described.distance
+            ),
+            None => eprintln!(
+                "{:>12} version {} from {} + {} commit(s) (no version tags)",
+                "Versioning".green(),
+                package.version,
+                configured,
+                described.distance
+            ),
+        }
     }
 
     Ok(())

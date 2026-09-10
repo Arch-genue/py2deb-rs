@@ -222,7 +222,10 @@ pub fn civil_from_days(z: i64) -> (i64, u32, u32) {
 /// What the working tree looks like relative to the last release.
 #[derive(Debug, Clone)]
 pub struct Describe {
-    /// Commits since the newest version tag, 0 when sitting on it.
+    /// The newest version tag, with any `v` prefix already stripped. `None`
+    /// when the repository has no version tags at all.
+    pub tag: Option<String>,
+    /// Commits since that tag, 0 when sitting on it.
     pub distance: u32,
     /// Abbreviated hash of `HEAD`.
     pub hash: String,
@@ -241,7 +244,8 @@ pub fn describe(repo: &Path) -> Result<Describe> {
         bail!("the repository has no commits");
     }
 
-    let distance = match version_tags(repo)?.first() {
+    let newest = version_tags(repo)?.into_iter().next();
+    let distance = match &newest {
         Some(tag) => git(repo, &["rev-list", "--count", &format!("{tag}..HEAD")])?
             .trim()
             .parse()
@@ -258,22 +262,31 @@ pub fn describe(repo: &Path) -> Result<Describe> {
     let _ = git(repo, &["update-index", "--refresh"]);
     let dirty = git(repo, &["diff-index", "--quiet", "HEAD", "--"]).is_err();
 
-    Ok(Describe { distance, hash, dirty })
+    let tag = newest.as_deref().map(|t| strip_v(t).to_string());
+
+    Ok(Describe { tag, distance, hash, dirty })
 }
 
-/// Appends git's position to `base`, giving every build its own version.
+/// The version a build at this point in history should carry.
 ///
-/// The suffix goes after `+`, which dpkg sorts *after* the bare version and
-/// before the next upstream one — `1.1.8 < 1.1.8+3.gabc1234 < 1.1.9` — so a
-/// development build upgrades cleanly in both directions. The commit count
-/// leads it because dpkg compares digit runs numerically, making `+12.` newer
-/// than `+3.`; two hashes on their own would only sort alphabetically, which
-/// says nothing about which came first.
+/// The newest version tag is the base, not `base` from the config: a tag is
+/// what declares a release, and reading the config instead would hand back a
+/// stale version whenever the two disagree — exactly the drift this flag
+/// exists to prevent. `base` is the fallback for a repository that has no
+/// version tags yet.
 ///
-/// Sitting exactly on a clean tag returns `base` untouched: that build *is*
-/// the release, and giving it a suffix would make it sort above the version
-/// it claims to be.
+/// Sitting exactly on a clean tag returns that tag untouched: the build *is*
+/// the release, and a suffix would make it sort above the version it claims
+/// to be. Otherwise the position is appended after `+`, which dpkg sorts
+/// after the bare version and before the next upstream one —
+/// `1.1.8 < 1.1.8+3.gabc1234 < 1.1.9` — so a development build upgrades
+/// cleanly in both directions. The commit count leads the suffix because dpkg
+/// compares digit runs numerically, making `+12.` newer than `+3.`; two
+/// hashes on their own would only sort alphabetically, which says nothing
+/// about which came first.
 pub fn version_with_commit(base: &str, described: &Describe) -> String {
+    let base = described.tag.as_deref().unwrap_or(base);
+
     if described.distance == 0 && !described.dirty {
         return base.to_string();
     }
