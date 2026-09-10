@@ -7,16 +7,9 @@ use anyhow::{Context, Result, bail};
 use toml::{Table, Value};
 use colored::Colorize;
 
-mod architecture;
-mod include_entry;
-
-mod package;
-use package::Package;
-
-mod info;
-
-mod deb;
-use deb::build::DebianBuild;
+use py2deb::package::Package;
+use py2deb::deb::build::DebianBuild;
+use py2deb::Verbosity;
 
 #[derive(Parser)]
 #[command(version, about)]
@@ -34,35 +27,12 @@ struct CliArgs {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Init project in current directory
     Init,
+    /// Build project in current directory
     Build,
+    /// Show project info
     Show
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
-pub enum Verbosity {
-    /// Only the final result on stdout.
-    Quiet,
-    /// Progress lines, the default.
-    #[default]
-    Normal,
-    /// Every archive entry as it is written.
-    Verbose,
-}
-
-impl Verbosity {
-    pub fn from_flags(quiet: bool, verbose: u8) -> Self {
-        match (quiet, verbose) {
-            (true, _) => Self::Quiet,
-            (_, 0) => Self::Normal,
-            _ => Self::Verbose,
-        }
-    }
-
-    /// Whether progress should be printed at all.
-    pub fn is_normal(self) -> bool { self >= Self::Normal }
-    /// Whether per-entry detail should be printed.
-    pub fn is_verbose(self) -> bool { self >= Self::Verbose }
 }
 
 fn main() -> Result<()> {

@@ -82,8 +82,18 @@ pub struct Package {
     /// Dpkg priority (//TODO!! VALIDATION, required, optional)
     priority: String,
     #[serde(default)]
-    /// Changelog file path (relative!)
+    /// Changelog file path (relative!), or `$git` / `$git(N)` to build one
+    /// from the repository's tags and commits.
     pub changelog: String,
+    #[serde(default)]
+    /// Distribution the changelog entries are released to. Debian's own
+    /// suites (`stable`, `unstable`) or a derivative's codename; defaults to
+    /// `unstable`, which is what a package not aimed at a release should say.
+    pub distribution: String,
+    #[serde(default)]
+    /// How pressing the upload is: `low`, `medium`, `high`, `emergency` or
+    /// `critical`. Defaults to `medium`, the value `dch` itself uses.
+    pub urgency: String,
 
     // Runtime fields here
     #[serde(default, skip_serializing)]
@@ -161,7 +171,9 @@ impl Package {
             description_file: "README.md".into(),
             section: "".into(),
             priority: "optional".into(),
-            changelog: "".into(),
+            changelog: "$git".into(),
+            distribution: "unstable".into(),
+            urgency: "medium".into(),
             installed_size: 0,
         }
     }
@@ -181,6 +193,38 @@ impl Package {
     pub fn get_package_file_name(&self) -> String {
         format!("{}_{}_{}.deb", self.package, self.version, self.arch)
     }
+    /// The changelog's distribution, validated against what Debian accepts.
+    ///
+    /// An unknown value is passed through rather than rejected — derivatives
+    /// use their own codenames (`noble`, `bookworm`), and this tool cannot
+    /// know them all — but an empty one becomes the default.
+    pub fn distribution(&self) -> String {
+        let value = self.distribution.trim();
+        if value.is_empty() { "unstable".to_string() } else { value.to_string() }
+    }
+
+    /// The changelog's urgency. Unlike the distribution this is a closed set
+    /// in Policy 4.4, so anything else is corrected with a warning.
+    pub fn urgency(&self) -> String {
+        const LEVELS: [&str; 5] = ["low", "medium", "high", "emergency", "critical"];
+        let value = self.urgency.trim().to_ascii_lowercase();
+
+        if value.is_empty() {
+            return "medium".to_string();
+        }
+        if LEVELS.contains(&value.as_str()) {
+            return value;
+        }
+
+        eprintln!(
+            "{:>15} urgency `{}` is not one of {}; using medium",
+            "Warning".yellow().bold(),
+            self.urgency,
+            LEVELS.join(", ")
+        );
+        "medium".to_string()
+    }
+
     /// The value of a field addressed by name, as `$name` in a template.
     ///
     /// Only fields worth interpolating are exposed; anything else is left
@@ -292,39 +336,5 @@ impl fmt::Display for Package {
             writeln!(f, "Conflicts: {}", self.conflicts.join(", "))?;
         }
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod dollar_tests {
-    use super::*;
-
-    fn pkg() -> Package {
-        Package::new("python3-libgkeyboard", "1.1.8", "GKeyboard library")
-    }
-
-    #[test]
-    fn substitutes_known_fields() {
-        let p = pkg();
-        assert_eq!(p.expand_dollar_properties("$package v$version"), "python3-libgkeyboard v1.1.8");
-    }
-
-    #[test]
-    fn leaves_unknown_names_alone() {
-        let p = pkg();
-        assert_eq!(p.expand_dollar_properties("cost is $nonexistent"), "cost is $nonexistent");
-    }
-
-    #[test]
-    fn double_dollar_is_a_literal() {
-        let p = pkg();
-        assert_eq!(p.expand_dollar_properties("$$5 for $package"), "$5 for python3-libgkeyboard");
-    }
-
-    #[test]
-    fn name_stops_at_punctuation() {
-        let p = pkg();
-        assert_eq!(p.expand_dollar_properties("$package-doc"), "python3-libgkeyboard-doc");
-        assert_eq!(p.expand_dollar_properties("v$version, released"), "v1.1.8, released");
     }
 }

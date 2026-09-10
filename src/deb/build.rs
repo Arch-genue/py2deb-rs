@@ -1,4 +1,4 @@
-use crate::Verbosity;
+use crate::{Verbosity, git};
 use crate::include_entry::IncludeEntry;
 use crate::info::BuildInfo;
 use crate::package::Package;
@@ -46,6 +46,7 @@ pub struct DebianBuild {
 
     tar_header: Option<TarHeader>,
     tar_root_path: PathBuf,
+    target_deb_path: PathBuf,
 
     /// MD5 digest of every regular file written to `data.tar.gz`, keyed by its
     /// archive path without the leading `./` — exactly the form `md5sums`
@@ -69,6 +70,7 @@ impl DebianBuild {
             verbosity: Verbosity::Normal,
             tar_header: None,
             tar_root_path: PathBuf::from("usr/lib/python3/dist-packages"),
+            target_deb_path: PathBuf::new(),
             md5sums: HashMap::new(),
             mtime: 0,
             created_dirs: HashSet::new(),
@@ -138,6 +140,7 @@ impl DebianBuild {
             .build();
 
         let target_deb_path = self.current_path.join("target").join("debian");
+        self.target_deb_path = self.current_path.join("target").join("debian");
         if !target_deb_path.exists() {
             fs::create_dir_all(&target_deb_path).context("Cannot create target/debian directory")?;
         }
@@ -184,6 +187,23 @@ impl DebianBuild {
             mode: Some(0o644)
         };
         self.package.include.push(copyright_entry);
+        
+        if let Some(changelog_contents) = self.generate_changelog() {
+            let changelog_path = self.target_deb_path.join("changelog.gz");
+
+            let mut encoder = GzEncoder::new(Vec::new(), Compression::best());
+            encoder.write_all(changelog_contents.as_bytes())?;
+            let compressed = encoder.finish()?;
+            fs::write(&changelog_path, compressed)?;
+
+            let rel_changelog_path = changelog_path.strip_prefix(&self.current_path).unwrap().to_path_buf();
+            let changelog_entry = IncludeEntry{
+                src: rel_changelog_path.to_string_lossy().to_string(),
+                dest: "usr/share/doc/$package/changelog.gz".into(),
+                mode: Some(0o644)
+            };
+            self.package.include.push(changelog_entry);
+        }
 
         // Includes
         let includes = &self.package.include.clone();
@@ -248,18 +268,14 @@ impl DebianBuild {
             // A licence like CC0 grants rights without naming an owner, so
             // there is nothing missing to report.
         } else if !package.maintainer.is_empty() {
-            out.push_str(&format!(
-                "Comment: Copyright information missing (maintainer: {})\n",
-                package.maintainer
-            ));
+            out.push_str(&format!("Comment: Copyright information missing (maintainer: {})\n", package.maintainer));
+
             eprintln!(
-                "{:>15} no copyright set; add `copyright = \"2026 Your Name\"` to [tool.py2deb]",
-                "Warning".yellow().bold()
+                "{:>15} no copyright set; add `copyright = \"2026 Your Name\"` to [tool.py2deb]", "Warning".yellow().bold()
             );
         } else {
             eprintln!(
-                "{:>15} Debian requires copyright information, but none could be determined",
-                "Warning".yellow().bold()
+                "{:>15} Debian requires copyright information, but none could be determined", "Warning".yellow().bold()
             );
         }
 
@@ -267,6 +283,93 @@ impl DebianBuild {
         out.push_str(&license.body);
 
         Ok(out)
+    }
+
+    /// Builds the `changelog.gz` payload, or `None` when the package has no
+    /// changelog to ship.
+    ///
+    /// `changelog = "$git"` reads the repository's history; `$git(N)` caps it
+    /// at N released versions. Anything else is a path to a file written by
+    /// hand, which is copied verbatim — a project that maintains its own
+    /// changelog should not have it rewritten.
+    fn generate_changelog(&self) -> Option<String> {
+        let changelog = self.package.changelog.trim();
+
+        if changelog.is_empty() {
+            eprintln!("{:>15} Changelog file not specified", "Warning".yellow().bold());
+            return None;
+        }
+
+        if let Some(limit) = parse_git_directive(changelog) {
+            return self.changelog_from_git(limit);
+        }
+
+        let changelog_path = self.current_path.join(changelog);
+        match fs::read_to_string(&changelog_path) {
+            Ok(contents) => Some(contents),
+            Err(error) => {
+                eprintln!(
+                    "{:>15} cannot read changelog {}: {}",
+                    "Warning".yellow().bold(),
+                    changelog_path.display(),
+                    error
+                );
+                None
+            }
+        }
+    }
+
+    /// Renders the changelog from git history.
+    ///
+    /// A failure here is a warning rather than an error: the package is
+    /// perfectly installable without a changelog, and refusing to build
+    /// because the source tarball was unpacked outside a repository would be
+    /// the wrong trade.
+    fn changelog_from_git(&self, limit: usize) -> Option<String> {
+        if !git::is_repository(&self.current_path) {
+            eprintln!(
+                "{:>15} changelog = \"$git\" but {} is not a git repository",
+                "Warning".yellow().bold(),
+                self.current_path.display()
+            );
+            return None;
+        }
+
+        let releases = match git::releases(&self.current_path, &self.package.version, limit) {
+            Ok(releases) => releases,
+            Err(error) => {
+                eprintln!("{:>15} cannot read git history: {:#}", "Warning".yellow().bold(), error);
+                return None;
+            }
+        };
+
+        if self.verbosity.is_verbose() {
+            let commits: usize = releases.iter().map(|r| r.commits.len()).sum();
+            eprintln!(
+                "{:>15} changelog from {} release(s), {} commit(s)",
+                "Adding".blue(),
+                releases.len(),
+                commits
+            );
+        }
+
+        // The newest entry must carry the version being built, or dpkg reports
+        // a changelog that disagrees with the control file.
+        if releases[0].version != self.package.version {
+            eprintln!(
+                "{:>15} newest git release is {} but the package is {}; tag the release to line them up",
+                "Warning".yellow().bold(),
+                releases[0].version,
+                self.package.version
+            );
+        }
+
+        Some(git::changelog(
+            &self.package.package,
+            &self.package.distribution(),
+            &self.package.urgency(),
+            &releases,
+        ))
     }
 
     /// Resolves what goes into the copyright file's `License:` field.
@@ -403,22 +506,6 @@ impl DebianBuild {
         for script_path in scripts {
             let filename = script_path.file_name().and_then(|f| f.to_str()).context("Cannot get script filename")?;
             self.write_file_entry(&mut control_archive, EntryOption{path: script_path.clone(), rel_str: format!("./{}", filename), chmod: 0o755}, false)?;
-        }
-
-        // Changelog
-        let changelog = &self.package.changelog;
-        if changelog.is_empty() {
-            eprintln!(
-                "{:>15} Changelog file not specified", "Warning".yellow().bold()
-            );
-        } else {
-            let changelog_path = self.current_path.join(changelog);
-            if changelog_path.exists() {
-                //TODO!!! CHANGELOG BUILD
-                // self.write_file_entry(&mut data_archive, EntryOption{path: control_path, rel_str: "./control".to_string(), ..EntryOption::default()}, false)?;
-            } else {
-                eprintln!("{:>15} changelog file not found {}", "Warning".yellow().bold(), changelog_path.display());
-            }
         }
 
         control_archive.finish()?;
@@ -571,6 +658,31 @@ esac
         // `&[u8]` is a `Read`, so the file is not opened a second time.
         archive.append(header, contents.as_slice())?;
         Ok(())
+    }
+}
+
+/// Reads a `$git` / `$git(N)` changelog directive.
+///
+/// Returns how many released versions to include — `$git` on its own means
+/// all of them. A path that merely mentions `$git` somewhere is not a
+/// directive, so the check is anchored at both ends.
+pub fn parse_git_directive(value: &str) -> Option<usize> {
+    let value = value.trim();
+    if value == "$git" {
+        return Some(usize::MAX);
+    }
+
+    let inner = value.strip_prefix("$git(")?.strip_suffix(')')?.trim();
+    match inner.parse::<usize>() {
+        Ok(0) | Err(_) => {
+            eprintln!(
+                "{:>15} `{}` is not a version count, using the full history",
+                "Warning".yellow().bold(),
+                value
+            );
+            Some(usize::MAX)
+        }
+        Ok(n) => Some(n),
     }
 }
 

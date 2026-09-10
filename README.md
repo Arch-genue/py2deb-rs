@@ -68,6 +68,39 @@ dependencies = [
 | `arch` | no | Target architecture, default `all`. |
 | `maintainer` | no | RFC 822 form: `Name <email>`. Falls back to git config. |
 | `dependencies` | no | Debian package names for the `Depends` field. |
+| `changelog` | no | `$git` / `$git(N)` to build one from git, or a path to a changelog written by hand. |
+| `distribution` | no | Suite the entries are released to, default `unstable`. |
+| `urgency` | no | `low`, `medium`, `high`, `emergency` or `critical`, default `medium`. |
+
+### Changelog
+
+Debian expects `/usr/share/doc/<package>/changelog.gz`, and a changelog is a
+history of *releases* rather than of commits. `changelog = "$git"` builds one
+from the repository on that understanding:
+
+- Every tag that names a version — `v1.2.3` or `1.2.3` — becomes one entry.
+  Tags that are not versions (`nightly`, `latest`) are ignored rather than
+  turned into nonsense entries.
+- The commits reachable from a tag but not its predecessor become that entry's
+  bullet points, subject first and body indented beneath it. Git trailers
+  (`Signed-off-by:`, `Co-Authored-By:`) are dropped — they record who touched a
+  commit, not what changed.
+- Commits made after the newest tag belong to the version being built, which is
+  the entry at the top. It is dated with the build time, so it always sorts
+  above the release below it.
+- An annotated tag supplies its own tagger and date, which is the true moment
+  of release; a lightweight tag falls back to the commit it points at.
+
+`$git(N)` keeps only the newest N releases, for repositories whose history is
+longer than the package deserves. Tags are ordered the way git orders versions,
+so `v1.10.0` correctly sorts above `v1.9.0`.
+
+Anything that is not a `$git` directive is read as a path and copied verbatim,
+so a project maintaining its own changelog keeps it. If the directory is not a
+git repository, or history cannot be read, the build warns and ships no
+changelog rather than failing — the package is installable without one.
+
+The output is checked against `dpkg-parsechangelog` and `lintian`.
 
 ### Architecture
 
@@ -105,6 +138,62 @@ dpkg-deb -I package.deb    # control metadata
 dpkg-deb -c package.deb    # file listing with permissions
 lintian package.deb        # policy checks
 ```
+
+## Roadmap to 1.0
+
+What still stands between the current state and a release that behaves
+correctly on someone else's machine.
+
+### Correctness
+
+- **Debian revisions.** `version = "1.1.8-2"` is not understood yet, so every
+  package is built as native. Supporting a revision means parsing the version
+  into upstream and revision parts, naming the changelog `changelog.Debian.gz`
+  rather than `changelog.gz` for non-native packages, and validating the
+  version against Debian's comparison rules (`~` sorts before nothing, digits
+  compare numerically).
+- **`conffiles`.** Files installed under `/etc` must be listed in the control
+  archive, or dpkg silently overwrites whatever the user edited on upgrade.
+- **`Architecture` detection.** A package containing compiled extension
+  modules cannot be `all`; the build should notice `.so` files and refuse, or
+  set the concrete architecture itself.
+- **`priority` validation.** Only `required`, `important`, `standard`,
+  `optional` and `extra` are legal values.
+
+### Reliability
+
+- **Tests.** Seventeen integration tests under `tests/` cover changelog
+  rendering, the `$git` directive and placeholder expansion. Archive layout,
+  control generation and the config parser are still uncovered; a test that
+  builds a fixture package and inspects it with `dpkg-deb` would have caught
+  most of what was found by hand during development.
+- **`lintian` in CI.** The checks that matter are the ones a Debian archive
+  would run.
+- **Error paths.** A few `unwrap()` calls remain where the failure is
+  plausible rather than impossible. The changelog reader no longer among
+  them.
+
+### Usability
+
+- **`py2deb init` defaults.** The generated `maintainer` placeholder does not
+  pass the tool's own validation; it should come from `DEBEMAIL`/`DEBFULLNAME`
+  or `git config`, the way `dh_make` does.
+- **Build hooks.** A command run before the archives are assembled, for
+  projects that are not plain Python — compiling Cython extensions, generating
+  Qt resources or `.ui` files, compiling translations. Whatever it writes into
+  the source tree is picked up by the normal walk, so the package stays a
+  description of the result rather than of the build.
+- **Custom maintainer script fragments.** `postinst` and `prerm` are generated
+  for `py3compile`/`py3clean`; a project should be able to add its own code —
+  `update-alternatives`, `systemctl enable`, a cache rebuild — without losing
+  the generated part. Appending fragments rather than replacing the file keeps
+  both.
+- **Changelog from git.** Generation from commit history exists; it still needs
+  a decision on how versions map to tags, and what to do with merge commits and
+  fixup messages.
+- **`install-path`.** `/usr/lib/python3/dist-packages` is currently hardcoded.
+- **Library API.** `py2deb` is a binary crate today; the archive-building code
+  is worth exposing as a library, which is what the README already implies.
 
 ## Acknowledgements
 
