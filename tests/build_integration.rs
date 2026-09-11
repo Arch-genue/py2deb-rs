@@ -411,7 +411,8 @@ fn the_build_script_never_writes_to_our_stdout() {
         "debian/build",
         "#!/bin/sh\nset -e\necho 'chatty script output'\nmkdir -p src\necho 'x = 1' > src/m.py\n",
     );
-    fixture.write("pyproject.toml", &format!(
+    fixture.write(
+        "pyproject.toml",
         "[tool.py2deb]\n\
          package = \"python3-stdout\"\n\
          version = \"1.0.0\"\n\
@@ -419,8 +420,8 @@ fn the_build_script_never_writes_to_our_stdout() {
          description = \"Fixture\"\n\
          src = \"src\"\n\
          dest = \"stdout_fixture\"\n\
-         maintainer-scripts = \"debian\"\n"
-    ));
+         maintainer-scripts = \"debian\"\n",
+    );
 
     let out = Command::new(env!("CARGO_BIN_EXE_py2deb"))
         .args(["--path".as_ref(), fixture.path.as_os_str(), "build".as_ref()])
@@ -445,4 +446,41 @@ fn the_build_script_never_writes_to_our_stdout() {
     let lines: Vec<&str> = stdout.lines().filter(|l| !l.trim().is_empty()).collect();
     assert_eq!(lines.len(), 1, "stdout should be one line, got {lines:?}");
     assert!(lines[0].ends_with(".deb"), "stdout should name the package: {lines:?}");
+}
+
+#[test]
+fn a_wildcard_architecture_becomes_concrete_in_the_package() {
+    // dpkg refuses to install a .deb declaring `any`, and that failure lands
+    // on whoever installs it rather than whoever built it.
+    let fixture = Fixture::new("archany");
+    fixture.write("src/module.py", "x = 1\n");
+
+    let mut package = base("python3-archany");
+    package.dest = Some("archany".into());
+    package.set_arch(py2deb::architecture::Architecture::Any);
+
+    let mut build = DebianBuild::new(package, fixture.path.clone())
+        .with_verbosity(Verbosity::Quiet);
+    let info = build.build().expect("build should succeed");
+
+    let host = Command::new("dpkg")
+        .arg("--print-architecture")
+        .output()
+        .expect("dpkg is required");
+    let host = String::from_utf8(host.stdout).unwrap().trim().to_string();
+
+    // The control file must name a real architecture...
+    let field = Command::new("dpkg-deb")
+        .args(["-f".as_ref(), info.deb_path.as_os_str(), "Architecture".as_ref()])
+        .output()
+        .expect("dpkg-deb is required");
+    let declared = String::from_utf8(field.stdout).unwrap().trim().to_string();
+    assert_eq!(declared, host, "control file should name this machine");
+
+    // ...and so must the file name, or the two disagree.
+    let name = info.deb_path.file_name().unwrap().to_string_lossy();
+    assert!(
+        name.ends_with(&format!("_{host}.deb")),
+        "file name should carry the resolved architecture: {name}"
+    );
 }

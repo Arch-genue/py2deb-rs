@@ -126,6 +126,20 @@ impl DebianBuild {
 
         let started = Instant::now();
 
+        // A wildcard `arch` has to become concrete before anything names it:
+        // the file name and the control file must agree, and both are written
+        // from this value.
+        let requested = self.package.arch();
+        self.package.resolve_architecture()?;
+        if requested != self.package.arch() && self.verbosity.is_normal() {
+            eprintln!(
+                "{:>13} architecture {} for this machine ({})",
+                "Resolved".green(),
+                self.package.arch(),
+                requested
+            );
+        }
+
         // Before the source check: generating what gets packaged is the main
         // reason to have a build script, so `src` need not exist until it has
         // run.

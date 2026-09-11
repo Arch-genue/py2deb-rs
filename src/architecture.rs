@@ -1,4 +1,6 @@
-use anyhow::Result;
+use std::process::Command;
+
+use anyhow::{Context, Result};
 
 /// Debian package architecture.
 ///
@@ -114,9 +116,53 @@ impl Architecture {
     }
 
     /// Whether this value may appear in a binary package's `Architecture:`
-    /// field. `any` may not — dpkg rejects the resulting `.deb`.
+    /// field. `any` may not — dpkg rejects the resulting `.deb` with
+    /// "package architecture (any) does not match system".
     pub fn is_valid_for_binary(&self) -> bool {
         !matches!(self, Self::Any)
+    }
+
+    /// The architecture dpkg builds for on this machine.
+    ///
+    /// `dpkg --print-architecture` is asked rather than `uname -m`, because
+    /// only dpkg knows its own spelling and its own opinion of the host: on a
+    /// 64-bit kernel running a 32-bit userland `uname` says `x86_64` while
+    /// dpkg correctly says `i386`, and a package built for the wrong one will
+    /// not install.
+    pub fn host() -> Result<Self> {
+        let out = Command::new("dpkg")
+            .arg("--print-architecture")
+            .output()
+            .context("Cannot run `dpkg --print-architecture`; is dpkg installed?")?;
+
+        if !out.status.success() {
+            anyhow::bail!(
+                "`dpkg --print-architecture` failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+
+        let name = String::from_utf8(out.stdout)
+            .context("dpkg printed invalid UTF-8")?
+            .trim()
+            .to_string();
+
+        name.parse()
+            .with_context(|| format!("dpkg reported the unknown architecture `{name}`"))
+    }
+
+    /// This architecture as a binary package may declare it, resolving `any`
+    /// to whatever the machine actually is.
+    ///
+    /// `any` is a source-package wildcard meaning "build me everywhere", so
+    /// the only honest reading of it in a binary package is the host: that is
+    /// what the build just produced. Everything else, `all` included, is
+    /// already concrete and passes through.
+    pub fn resolve_for_binary(&self) -> Result<Self> {
+        match self {
+            Self::Any => Self::host(),
+            concrete => Ok(*concrete),
+        }
     }
 }
 

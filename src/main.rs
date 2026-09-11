@@ -155,15 +155,13 @@ fn apply_git_version(package: &mut Package, project_path: &Path, verbosity: Verb
     // The tag wins, so a stale `version` in the config is silently overridden.
     // Say so: the two disagreeing is usually a config nobody updated, and
     // finding out from the published version is finding out too late.
-    if let Some(tag) = &described.tag {
-        if tag != &configured {
-            eprintln!(
-                "{:>12} tag {} overrides version {} from pyproject.toml",
-                "Warning".yellow().bold(),
-                tag,
-                configured
-            );
-        }
+    if let Some(tag) = described.tag.as_ref().filter(|tag| **tag != configured) {
+        eprintln!(
+            "{:>12} tag {} overrides version {} from pyproject.toml",
+            "Warning".yellow().bold(),
+            tag,
+            configured
+        );
     }
 
     if verbosity.is_normal() {

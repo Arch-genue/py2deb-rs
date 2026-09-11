@@ -208,6 +208,28 @@ impl Package {
     pub fn get_package_file_name(&self) -> String {
         format!("{}_{}_{}.deb", self.package, self.version, self.arch)
     }
+    /// Replaces a wildcard `arch` with the architecture actually being built
+    /// for, so the control file and the file name agree on a concrete value.
+    ///
+    /// Called once before packaging: a binary `.deb` declaring `any` is
+    /// rejected by dpkg at install time ("package architecture (any) does not
+    /// match system"), which is a failure the person installing it discovers,
+    /// not the person who built it.
+    pub fn resolve_architecture(&mut self) -> Result<()> {
+        self.arch = self.arch.resolve_for_binary()?;
+        Ok(())
+    }
+
+    /// The architecture this package declares.
+    pub fn arch(&self) -> Architecture {
+        self.arch
+    }
+
+    /// Overrides the configured architecture.
+    pub fn set_arch(&mut self, arch: Architecture) {
+        self.arch = arch;
+    }
+
     /// Whether `src` is the `$skip` sentinel, meaning nothing is packaged from
     /// the source tree and the payload comes from `include` alone.
     pub fn skips_source(&self) -> bool {

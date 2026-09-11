@@ -275,6 +275,21 @@ spellings are normalised, so `aarch64` becomes `arm64` and `x86_64` becomes
 Leave it at `all` for pure Python. Packages containing compiled extension
 modules must name a concrete architecture.
 
+`any` is a *source* package wildcard meaning "build this everywhere", and dpkg
+refuses to install a binary package that declares it — `package architecture
+(any) does not match system`. Writing `arch = "any"` therefore resolves to
+whatever `dpkg --print-architecture` reports for the machine doing the build,
+which is what that build actually produced:
+
+```
+Resolved architecture amd64 for this machine (any)
+```
+
+Both the control file and the `.deb` file name carry the resolved value. `all`
+is left alone — it means architecture-*independent*, not "this machine" — and a
+concrete architecture passes through untouched, so cross-building keeps saying
+what it was told.
+
 ### Dependencies
 
 Dependencies are Debian package names, not PyPI ones. The mapping between the two
@@ -319,13 +334,14 @@ correctly on someone else's machine.
   archive, or dpkg silently overwrites whatever the user edited on upgrade.
 - **`Architecture` detection.** A package containing compiled extension
   modules cannot be `all`; the build should notice `.so` files and refuse, or
-  set the concrete architecture itself.
+  set the concrete architecture itself. `any` now resolves to the build host,
+  but `all` is still taken at its word.
 - **`priority` validation.** Only `required`, `important`, `standard`,
   `optional` and `extra` are legal values.
 
 ### Reliability
 
-- **Tests.** Seventy integration tests under `tests/` cover changelog
+- **Tests.** Eighty-one integration tests under `tests/` cover changelog
   rendering, the `$git` directive, description handling, git versioning,
   symlinks, exclude filtering, placeholder expansion, and end-to-end packaging
   read back with `dpkg-deb`. Archive layout,
