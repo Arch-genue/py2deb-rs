@@ -13,10 +13,10 @@
 //! `*`, four before a continuation line, and a trailer of exactly one space,
 //! `--`, the maintainer, two spaces, and an RFC 2822 date with a numeric zone.
 
+use anyhow::{Context, Result, bail};
 use std::path::Path;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
-use anyhow::{Context, Result, bail};
 
 const F: char = '\x1f'; // разделитель полей
 const R: char = '\x1e'; // разделитель записей
@@ -24,7 +24,9 @@ const R: char = '\x1e'; // разделитель записей
 pub fn config(repo: &Path, key: &str) -> Option<String> {
     let out = Command::new("git")
         .current_dir(repo)
-        .args(["config", "--get", key]).output().ok()?;
+        .args(["config", "--get", key])
+        .output()
+        .ok()?;
 
     if !out.status.success() {
         return None;
@@ -67,11 +69,11 @@ pub fn is_repository(repo: &Path) -> bool {
 #[derive(Debug, Clone)]
 pub struct Commit {
     pub hash: String,
-    pub title: String,   // %s
-    pub body: String,    // %b
+    pub title: String, // %s
+    pub body: String,  // %b
     pub author: String,
     pub email: String,
-    pub date: String,    // RFC2822 — ровно формат debian/changelog
+    pub date: String, // RFC2822 — ровно формат debian/changelog
 }
 
 impl Commit {
@@ -140,11 +142,16 @@ fn version_tags(repo: &Path) -> Result<Vec<String>> {
 /// A tag names a release if, once an optional `v` is dropped, it starts with a
 /// digit — which is what Debian versions must do as well.
 pub fn looks_like_version(tag: &str) -> bool {
-    strip_v(tag).chars().next().is_some_and(|c| c.is_ascii_digit())
+    strip_v(tag)
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_digit())
 }
 
 pub fn strip_v(tag: &str) -> &str {
-    tag.strip_prefix('v').or_else(|| tag.strip_prefix('V')).unwrap_or(tag)
+    tag.strip_prefix('v')
+        .or_else(|| tag.strip_prefix('V'))
+        .unwrap_or(tag)
 }
 
 /// Who and when a tag was made.
@@ -153,11 +160,14 @@ pub fn strip_v(tag: &str) -> &str {
 /// a lightweight tag has none, so git's `%(taggerdate)` comes back empty and
 /// the commit it points at answers instead.
 fn tag_metadata(repo: &Path, tag: &str) -> Option<(String, String)> {
-    let raw = git(repo, &[
-        "for-each-ref",
-        &format!("refs/tags/{tag}"),
-        "--format=%(taggername)\x1f%(taggeremail)\x1f%(taggerdate:rfc2822)",
-    ])
+    let raw = git(
+        repo,
+        &[
+            "for-each-ref",
+            &format!("refs/tags/{tag}"),
+            "--format=%(taggername)\x1f%(taggeremail)\x1f%(taggerdate:rfc2822)",
+        ],
+    )
     .ok()?;
 
     let f: Vec<&str> = raw.trim_end().split(F).collect();
@@ -193,8 +203,7 @@ pub fn now_rfc2822() -> String {
 
     let (year, month, day) = civil_from_days(days as i64);
     const MONTHS: [&str; 12] = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];
     let month_name = MONTHS[(month - 1) as usize];
 
@@ -239,7 +248,9 @@ pub struct Describe {
 /// so a `nightly` tag would derail it, and the same `looks_like_version` rule
 /// that drives the changelog has to apply here too.
 pub fn describe(repo: &Path) -> Result<Describe> {
-    let hash = git(repo, &["rev-parse", "--short", "HEAD"])?.trim().to_string();
+    let hash = git(repo, &["rev-parse", "--short", "HEAD"])?
+        .trim()
+        .to_string();
     if hash.is_empty() {
         bail!("the repository has no commits");
     }
@@ -264,7 +275,12 @@ pub fn describe(repo: &Path) -> Result<Describe> {
 
     let tag = newest.as_deref().map(|t| strip_v(t).to_string());
 
-    Ok(Describe { tag, distance, hash, dirty })
+    Ok(Describe {
+        tag,
+        distance,
+        hash,
+        dirty,
+    })
 }
 
 /// The version a build at this point in history should carry.
@@ -376,10 +392,7 @@ pub fn releases(repo: &Path, version: &str, limit: usize) -> Result<Vec<Release>
 /// (`Signed-off-by:`, `Co-Authored-By:`) are dropped — they say who touched
 /// the commit, not what changed, and belong nowhere in a changelog.
 fn render_entry(pkg: &str, dist: &str, urgency: &str, release: &Release) -> String {
-    let mut s = format!(
-        "{pkg} ({}) {dist}; urgency={urgency}\n\n",
-        release.version
-    );
+    let mut s = format!("{pkg} ({}) {dist}; urgency={urgency}\n\n", release.version);
 
     for c in &release.commits {
         // A title can be empty on a malformed commit; the hash keeps the entry
@@ -408,8 +421,14 @@ fn render_entry(pkg: &str, dist: &str, urgency: &str, release: &Release) -> Stri
 /// Git trailers, which describe authorship rather than the change itself.
 fn is_trailer(line: &str) -> bool {
     const KEYS: [&str; 8] = [
-        "signed-off-by:", "co-authored-by:", "reviewed-by:", "acked-by:",
-        "tested-by:", "reported-by:", "suggested-by:", "cc:",
+        "signed-off-by:",
+        "co-authored-by:",
+        "reviewed-by:",
+        "acked-by:",
+        "tested-by:",
+        "reported-by:",
+        "suggested-by:",
+        "cc:",
     ];
     let lower = line.to_ascii_lowercase();
     KEYS.iter().any(|k| lower.starts_with(k))

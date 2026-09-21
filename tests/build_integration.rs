@@ -9,9 +9,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use py2deb::Verbosity;
 use py2deb::deb::build::DebianBuild;
 use py2deb::package::Package;
-use py2deb::Verbosity;
 
 /// A throwaway project directory, removed when the test ends.
 struct Fixture {
@@ -47,8 +47,8 @@ impl Fixture {
 
     /// Builds the package and returns every path inside `data.tar.gz`.
     fn build(&self, package: Package) -> Vec<String> {
-        let mut build = DebianBuild::new(package, self.path.clone())
-            .with_verbosity(Verbosity::Quiet);
+        let mut build =
+            DebianBuild::new(package, self.path.clone()).with_verbosity(Verbosity::Quiet);
         let info = build.build().expect("build should succeed");
 
         entries(&info.deb_path)
@@ -79,7 +79,9 @@ fn entries(deb: &Path) -> Vec<String> {
 /// Whether any archive member's path ends with `suffix`.
 fn has(entries: &[String], suffix: &str) -> bool {
     entries.iter().any(|line| {
-        line.split_whitespace().last().is_some_and(|p| p.ends_with(suffix))
+        line.split_whitespace()
+            .last()
+            .is_some_and(|p| p.ends_with(suffix))
     })
 }
 
@@ -153,7 +155,10 @@ fn an_included_directory_is_copied_recursively() {
         .i;
 
     let entries = fixture.build(package);
-    assert!(has(&entries, "usr/share/thing/assets/one.txt"), "{entries:#?}");
+    assert!(
+        has(&entries, "usr/share/thing/assets/one.txt"),
+        "{entries:#?}"
+    );
     assert!(
         has(&entries, "usr/share/thing/assets/icons/deep/two.png"),
         "nested file missing: {entries:#?}"
@@ -215,9 +220,11 @@ fn a_failing_build_script_stops_the_build() {
     package.dest = Some("broken".into());
     package.maintainer_scripts = "debian".into();
 
-    let mut build = DebianBuild::new(package, fixture.path.clone())
-        .with_verbosity(Verbosity::Quiet);
-    let error = build.build().expect_err("a failing script must stop the build");
+    let mut build =
+        DebianBuild::new(package, fixture.path.clone()).with_verbosity(Verbosity::Quiet);
+    let error = build
+        .build()
+        .expect_err("a failing script must stop the build");
 
     assert!(
         format!("{error:#}").contains("status 3"),
@@ -235,9 +242,11 @@ fn a_non_executable_build_script_is_refused() {
     package.dest = Some("perm".into());
     package.maintainer_scripts = "debian".into();
 
-    let mut build = DebianBuild::new(package, fixture.path.clone())
-        .with_verbosity(Verbosity::Quiet);
-    let error = build.build().expect_err("a non-executable script must be refused");
+    let mut build =
+        DebianBuild::new(package, fixture.path.clone()).with_verbosity(Verbosity::Quiet);
+    let error = build
+        .build()
+        .expect_err("a non-executable script must be refused");
 
     assert!(
         format!("{error:#}").contains("not executable"),
@@ -254,7 +263,10 @@ fn no_maintainer_scripts_directory_is_not_an_error() {
     package.dest = Some("plain".into());
 
     let entries = fixture.build(package);
-    assert!(has(&entries, "dist-packages/plain/module.py"), "{entries:#?}");
+    assert!(
+        has(&entries, "dist-packages/plain/module.py"),
+        "{entries:#?}"
+    );
 }
 
 /// Writes a `.gitignore` and initialises a repository, so the ignore rules
@@ -289,7 +301,10 @@ fn bytecode_never_ships_from_the_source_tree() {
     package.dest = Some("srcjunk".into());
 
     let entries = fixture.build(package);
-    assert!(has(&entries, "dist-packages/srcjunk/module.py"), "{entries:#?}");
+    assert!(
+        has(&entries, "dist-packages/srcjunk/module.py"),
+        "{entries:#?}"
+    );
     assert!(!has(&entries, ".pyc"), "bytecode shipped: {entries:#?}");
     assert!(
         !entries.iter().any(|l| l.contains("__pycache__")),
@@ -313,7 +328,10 @@ fn bytecode_never_ships_from_an_included_directory() {
         .i;
 
     let entries = fixture.build(package);
-    assert!(has(&entries, "usr/share/thing/assets/keep.txt"), "{entries:#?}");
+    assert!(
+        has(&entries, "usr/share/thing/assets/keep.txt"),
+        "{entries:#?}"
+    );
     assert!(!has(&entries, ".pyc"), "bytecode shipped: {entries:#?}");
     assert!(
         !entries.iter().any(|l| l.contains("__pycache__")),
@@ -336,8 +354,14 @@ fn gitignored_files_are_left_out_of_includes() {
         .i;
 
     let entries = fixture.build(package);
-    assert!(has(&entries, "usr/share/thing/assets/keep.txt"), "{entries:#?}");
-    assert!(!has(&entries, "debug.log"), "gitignored file shipped: {entries:#?}");
+    assert!(
+        has(&entries, "usr/share/thing/assets/keep.txt"),
+        "{entries:#?}"
+    );
+    assert!(
+        !has(&entries, "debug.log"),
+        "gitignored file shipped: {entries:#?}"
+    );
 }
 
 #[test]
@@ -355,8 +379,14 @@ fn the_exclude_list_applies_to_includes() {
         .i;
 
     let entries = fixture.build(package);
-    assert!(has(&entries, "usr/share/thing/assets/keep.txt"), "{entries:#?}");
-    assert!(!has(&entries, "notes.tmp"), "excluded file shipped: {entries:#?}");
+    assert!(
+        has(&entries, "usr/share/thing/assets/keep.txt"),
+        "{entries:#?}"
+    );
+    assert!(
+        !has(&entries, "notes.tmp"),
+        "excluded file shipped: {entries:#?}"
+    );
 }
 
 #[test]
@@ -374,7 +404,10 @@ fn a_directory_emptied_by_filtering_is_not_shipped() {
         .i;
 
     let entries = fixture.build(package);
-    assert!(has(&entries, "usr/share/thing/assets/keep.txt"), "{entries:#?}");
+    assert!(
+        has(&entries, "usr/share/thing/assets/keep.txt"),
+        "{entries:#?}"
+    );
     assert!(
         !entries.iter().any(|l| l.contains("assets/cache")),
         "empty directory shipped: {entries:#?}"
@@ -424,11 +457,19 @@ fn the_build_script_never_writes_to_our_stdout() {
     );
 
     let out = Command::new(env!("CARGO_BIN_EXE_py2deb"))
-        .args(["--path".as_ref(), fixture.path.as_os_str(), "build".as_ref()])
+        .args([
+            "--path".as_ref(),
+            fixture.path.as_os_str(),
+            "build".as_ref(),
+        ])
         .output()
         .expect("cannot run py2deb");
 
-    assert!(out.status.success(), "build failed: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "build failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let stdout = String::from_utf8(out.stdout).expect("stdout was not UTF-8");
     let stderr = String::from_utf8(out.stderr).expect("stderr was not UTF-8");
@@ -445,7 +486,10 @@ fn the_build_script_never_writes_to_our_stdout() {
     // What remains must be exactly one line naming the built package.
     let lines: Vec<&str> = stdout.lines().filter(|l| !l.trim().is_empty()).collect();
     assert_eq!(lines.len(), 1, "stdout should be one line, got {lines:?}");
-    assert!(lines[0].ends_with(".deb"), "stdout should name the package: {lines:?}");
+    assert!(
+        lines[0].ends_with(".deb"),
+        "stdout should name the package: {lines:?}"
+    );
 }
 
 #[test]
@@ -459,8 +503,8 @@ fn a_wildcard_architecture_becomes_concrete_in_the_package() {
     package.dest = Some("archany".into());
     package.set_arch(py2deb::architecture::Architecture::Any);
 
-    let mut build = DebianBuild::new(package, fixture.path.clone())
-        .with_verbosity(Verbosity::Quiet);
+    let mut build =
+        DebianBuild::new(package, fixture.path.clone()).with_verbosity(Verbosity::Quiet);
     let info = build.build().expect("build should succeed");
 
     let host = Command::new("dpkg")
@@ -471,7 +515,11 @@ fn a_wildcard_architecture_becomes_concrete_in_the_package() {
 
     // The control file must name a real architecture...
     let field = Command::new("dpkg-deb")
-        .args(["-f".as_ref(), info.deb_path.as_os_str(), "Architecture".as_ref()])
+        .args([
+            "-f".as_ref(),
+            info.deb_path.as_os_str(),
+            "Architecture".as_ref(),
+        ])
         .output()
         .expect("dpkg-deb is required");
     let declared = String::from_utf8(field.stdout).unwrap().trim().to_string();

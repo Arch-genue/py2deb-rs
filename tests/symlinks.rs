@@ -5,16 +5,19 @@
 //! halves, so most of what is tested here is which side of that line a given
 //! pair falls on.
 
-use std::path::{Path, PathBuf};
 use py2deb::package::Package;
 use py2deb::symlink_entry::SymlinkEntry;
+use std::path::{Path, PathBuf};
 
 fn pkg() -> Package {
     Package::new("gvcp", "1.0.0", "GVCP launcher")
 }
 
 fn entry(target: &str, link: &str) -> SymlinkEntry {
-    SymlinkEntry { target: target.into(), link: link.into() }
+    SymlinkEntry {
+        target: target.into(),
+        link: link.into(),
+    }
 }
 
 fn resolve(target: &str, link: &str) -> (PathBuf, PathBuf) {

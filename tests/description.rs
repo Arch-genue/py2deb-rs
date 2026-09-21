@@ -47,7 +47,10 @@ fn a_long_paragraph_splits_at_its_first_sentence() {
                 It also works on Wayland and on the bare console.";
     let (head, tail) = split_first_sentence(text);
 
-    assert_eq!(head, "Switches keyboard layouts on Linux without an X11 session");
+    assert_eq!(
+        head,
+        "Switches keyboard layouts on Linux without an X11 session"
+    );
     assert!(tail.starts_with("It also works"), "{tail}");
 }
 
@@ -57,10 +60,16 @@ fn a_long_paragraph_without_a_sentence_break_splits_on_a_word() {
                 no X11 session at all";
     let (head, tail) = split_first_sentence(text);
 
-    assert!("Description: ".len() + head.chars().count() < 80, "synopsis too long: {head}");
+    assert!(
+        "Description: ".len() + head.chars().count() < 80,
+        "synopsis too long: {head}"
+    );
     assert!(!tail.is_empty());
     // Nothing may be lost in the split.
-    assert_eq!(format!("{head} {tail}"), text.split_whitespace().collect::<Vec<_>>().join(" "));
+    assert_eq!(
+        format!("{head} {tail}"),
+        text.split_whitespace().collect::<Vec<_>>().join(" ")
+    );
 }
 
 #[test]
@@ -99,14 +108,18 @@ fn badges_leave_nothing_behind() {
 
 #[test]
 fn links_keep_their_text() {
-    assert_eq!(strip_markdown("See [the docs](https://example.com) for more."),
-               "See the docs for more.");
+    assert_eq!(
+        strip_markdown("See [the docs](https://example.com) for more."),
+        "See the docs for more."
+    );
 }
 
 #[test]
 fn emphasis_markers_are_removed() {
-    assert_eq!(strip_markdown("Uses **evdev** and `ioctl` directly."),
-               "Uses evdev and ioctl directly.");
+    assert_eq!(
+        strip_markdown("Uses **evdev** and `ioctl` directly."),
+        "Uses evdev and ioctl directly."
+    );
 }
 
 #[test]
@@ -130,7 +143,13 @@ fn a_readme_shaped_file_produces_a_usable_description() {
     assert!(!synopsis.is_empty());
     assert!(!synopsis.starts_with('#'), "{synopsis}");
     assert!(!synopsis.contains("!["), "badge leaked: {synopsis}");
-    assert!("Description: ".len() + synopsis.chars().count() < 80, "{synopsis}");
+    assert!(
+        "Description: ".len() + synopsis.chars().count() < 80,
+        "{synopsis}"
+    );
     assert!(extended.contains("Wayland"), "{extended}");
-    assert!(!extended.contains("pip install"), "code fence leaked: {extended}");
+    assert!(
+        !extended.contains("pip install"),
+        "code fence leaked: {extended}"
+    );
 }

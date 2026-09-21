@@ -4,23 +4,36 @@
 //! with what is already published. That only works if dpkg orders the results
 //! the way a person would expect, which is what most of these check.
 
-use py2deb::git::{version_with_commit, Describe};
+use py2deb::git::{Describe, version_with_commit};
 
 /// A position described against tag `1.1.8` — the case where the config and
 /// the newest tag already agree.
 fn described(distance: u32, hash: &str, dirty: bool) -> Describe {
-    Describe { tag: Some("1.1.8".into()), distance, hash: hash.into(), dirty }
+    Describe {
+        tag: Some("1.1.8".into()),
+        distance,
+        hash: hash.into(),
+        dirty,
+    }
 }
 
 /// A position in a repository carrying no version tags at all.
 fn untagged(distance: u32, hash: &str, dirty: bool) -> Describe {
-    Describe { tag: None, distance, hash: hash.into(), dirty }
+    Describe {
+        tag: None,
+        distance,
+        hash: hash.into(),
+        dirty,
+    }
 }
 
 #[test]
 fn a_clean_tag_keeps_the_plain_version() {
     // This build *is* the release; a suffix would sort it above itself.
-    assert_eq!(version_with_commit("1.1.8", &described(0, "abc1234", false)), "1.1.8");
+    assert_eq!(
+        version_with_commit("1.1.8", &described(0, "abc1234", false)),
+        "1.1.8"
+    );
 }
 
 #[test]
@@ -145,6 +158,9 @@ fn a_tag_newer_than_the_config_still_sorts_correctly() {
     };
     let built = version_with_commit("2.4.3", &described);
 
-    assert!(lt("2.4.3", &built), "{built} should sort above the stale 2.4.3");
+    assert!(
+        lt("2.4.3", &built),
+        "{built} should sort above the stale 2.4.3"
+    );
     assert!(lt(&built, "2.4.5"), "{built} should sort below 2.4.5");
 }

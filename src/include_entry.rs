@@ -1,12 +1,11 @@
-use std::path::{Path, PathBuf};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use anyhow::{Result, Context};
 
 use crate::package::Package;
-
 
 #[derive(Debug, Clone, Serialize)]
 pub struct IncludeEntry {
@@ -42,7 +41,11 @@ impl<'de> Deserialize<'de> for IncludeEntry {
             })
             .transpose()?;
 
-        Ok(Self { src: src.clone(), dest: dest.clone(), mode })
+        Ok(Self {
+            src: src.clone(),
+            dest: dest.clone(),
+            mode,
+        })
     }
 }
 

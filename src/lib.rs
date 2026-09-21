@@ -34,7 +34,11 @@ impl Verbosity {
     }
 
     /// Whether progress should be printed at all.
-    pub fn is_normal(self) -> bool { self >= Self::Normal }
+    pub fn is_normal(self) -> bool {
+        self >= Self::Normal
+    }
     /// Whether per-entry detail should be printed.
-    pub fn is_verbose(self) -> bool { self >= Self::Verbose }
+    pub fn is_verbose(self) -> bool {
+        self >= Self::Verbose
+    }
 }

@@ -1,8 +1,4 @@
-use std::{
-    path::Path,
-    fmt,
-    fs
-};
+use std::{fmt, fs, path::Path};
 
 use super::architecture::Architecture;
 use super::include_entry::IncludeEntry;
@@ -24,7 +20,7 @@ pub struct Package {
     /// Maintainer
     pub maintainer: String,
     #[serde(default)]
-    /// To whom and when the copyright of the software is granted. 
+    /// To whom and when the copyright of the software is granted.
     /// If not present, the maintainer is used.
     pub copyright: String,
     #[serde(default)]
@@ -45,22 +41,22 @@ pub struct Package {
     pub license_file_skip_lines: u32,
 
     #[serde(default = "default_arch")]
-    /// Target architecture, default = all 
+    /// Target architecture, default = all
     arch: Architecture, // TODO!!! Check for binary files in project
-    
+
     #[serde(default)]
     /// Dpkg depends list
     depends: Vec<String>,
     #[serde(default)]
     /// Dpkg conflicts list
     conflicts: Vec<String>,
-    
+
     #[serde(default)]
     /// Project source path
     pub src: String,
     /// Debian destination path (usr/lib/python3/dist-packages/{dest}), default is project_name
     pub dest: Option<String>,
-    
+
     #[serde(default)]
     /// Include other files
     pub include: Vec<IncludeEntry>,
@@ -115,30 +111,39 @@ pub struct Package {
 }
 
 fn validate_package_name<'de, D>(d: D) -> Result<String, D::Error>
-where D: serde::Deserializer<'de> {
+where
+    D: serde::Deserializer<'de>,
+{
     use serde::de::Error;
     let raw = String::deserialize(d)?;
 
     if raw.len() < 2 {
-        return Err(D::Error::custom("package name must be at least 2 characters"));
+        return Err(D::Error::custom(
+            "package name must be at least 2 characters",
+        ));
     }
 
     if !raw.chars().next().unwrap().is_ascii_alphanumeric() {
-        return Err(D::Error::custom(
-            format!("package name must start with a letter or digit, got `{raw}`")
-        ));
+        return Err(D::Error::custom(format!(
+            "package name must start with a letter or digit, got `{raw}`"
+        )));
     }
-    if !raw.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "+-.".contains(c)) {
-        return Err(D::Error::custom(
-            format!("package name may only certain a-z, 0-9, +, -, . - got `{raw}`")
-        ));
+    if !raw
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "+-.".contains(c))
+    {
+        return Err(D::Error::custom(format!(
+            "package name may only certain a-z, 0-9, +, -, . - got `{raw}`"
+        )));
     }
 
     Ok(raw)
 }
 
 fn validate_maintainer<'de, D>(d: D) -> Result<String, D::Error>
-where D: serde::Deserializer<'de> {
+where
+    D: serde::Deserializer<'de>,
+{
     use serde::de::Error;
     let raw = String::deserialize(d)?;
     if raw.is_empty() {
@@ -148,9 +153,9 @@ where D: serde::Deserializer<'de> {
     }
 
     if !raw.contains('<') {
-        return Err(D::Error::custom(
-            format!("maintainer must include an email in angle brackets: `Name <you@example.com>` got - `{raw}`")
-        ));
+        return Err(D::Error::custom(format!(
+            "maintainer must include an email in angle brackets: `Name <you@example.com>` got - `{raw}`"
+        )));
     }
 
     Ok(raw)
@@ -161,11 +166,15 @@ fn default_arch() -> Architecture {
 }
 
 impl Package {
-    pub fn new(package: impl Into<String>, version: impl Into<String>, description: impl Into<String>) -> Self {
+    pub fn new(
+        package: impl Into<String>,
+        version: impl Into<String>,
+        description: impl Into<String>,
+    ) -> Self {
         Self {
             package: package.into(),
             version: version.into(),
-            
+
             maintainer: "Name <user@example.com>".into(),
             copyright: "".into(),
             homepage: "".into(),
@@ -199,10 +208,14 @@ impl Package {
         let value: toml::Value = toml::from_str(&config_toml)
             .with_context(|| format!("{} is not valid TOML", path.display()))?;
 
-        let section = value.get("tool").and_then(|t| t.get("py2deb"))
+        let section = value
+            .get("tool")
+            .and_then(|t| t.get("py2deb"))
             .with_context(|| "Cannot find [tool.py2deb] section. Init project first".to_string())?;
 
-        section.clone().try_into()
+        section
+            .clone()
+            .try_into()
             .with_context(|| format!("Invalid [tool.py2deb] section in {}", path.display()))
     }
     pub fn get_package_file_name(&self) -> String {
@@ -243,7 +256,11 @@ impl Package {
     /// know them all — but an empty one becomes the default.
     pub fn distribution(&self) -> String {
         let value = self.distribution.trim();
-        if value.is_empty() { "unstable".to_string() } else { value.to_string() }
+        if value.is_empty() {
+            "unstable".to_string()
+        } else {
+            value.to_string()
+        }
     }
 
     /// The changelog's urgency. Unlike the distribution this is a closed set
@@ -400,7 +417,8 @@ impl Package {
     }
 
     pub fn generate_control(&mut self, root: &Path) -> String {
-        let mut control_str = format!("
+        let mut control_str = format!(
+            "
 Package: {}
 Version: {}
 Architecture: {}
@@ -421,7 +439,8 @@ Priority: {}\n",
         }
 
         if !self.depends.is_empty() {
-            control_str.push_str(format!("Depends: python3:any, {}\n", self.depends.join(", ")).as_str());
+            control_str
+                .push_str(format!("Depends: python3:any, {}\n", self.depends.join(", ")).as_str());
         } else {
             control_str.push_str("Depends: python3:any\n");
         }
@@ -513,9 +532,17 @@ pub fn split_first_sentence(text: &str) -> (String, String) {
     }
 
     match end {
-        Some(i) => (text[..i].trim_end_matches('.').trim().to_string(), text[i..].trim().to_string()),
+        Some(i) => (
+            text[..i].trim_end_matches('.').trim().to_string(),
+            text[i..].trim().to_string(),
+        ),
         // No sentence break: fall back to a word boundary so nothing is lost.
-        None => match text[..].char_indices().take_while(|(i, _)| *i <= MAX_SYNOPSIS).filter(|(_, c)| *c == ' ').last() {
+        None => match text[..]
+            .char_indices()
+            .take_while(|(i, _)| *i <= MAX_SYNOPSIS)
+            .filter(|(_, c)| *c == ' ')
+            .last()
+        {
             Some((i, _)) => (text[..i].trim().to_string(), text[i..].trim().to_string()),
             None => (text.to_string(), String::new()),
         },
@@ -527,9 +554,7 @@ pub fn trim_article(synopsis: &str) -> String {
     let trimmed = synopsis.trim_end_matches('.').trim();
 
     for article in ["a ", "an ", "the "] {
-        if trimmed.len() > article.len()
-            && trimmed[..article.len()].eq_ignore_ascii_case(article)
-        {
+        if trimmed.len() > article.len() && trimmed[..article.len()].eq_ignore_ascii_case(article) {
             return trimmed[article.len()..].trim().to_string();
         }
     }
@@ -560,10 +585,7 @@ pub fn strip_markdown(text: &str) -> String {
         }
 
         // Headings, tables, and horizontal rules are pure layout.
-        if trimmed.starts_with('#')
-            || trimmed.starts_with('|')
-            || is_horizontal_rule(trimmed)
-        {
+        if trimmed.starts_with('#') || trimmed.starts_with('|') || is_horizontal_rule(trimmed) {
             continue;
         }
 
@@ -615,8 +637,10 @@ fn strip_inline_markup(line: &str) -> String {
             // link — `[![alt](img)](href)` — so the inner image is skipped
             // first, which leaves the outer link with nothing to contribute.
             '[' => {
-                if chars.get(i + 1) == Some(&'!') && chars.get(i + 2) == Some(&'[') 
-                    && let Some(inner_end) = closing_link(&chars, i + 2) {
+                if chars.get(i + 1) == Some(&'!')
+                    && chars.get(i + 2) == Some(&'[')
+                    && let Some(inner_end) = closing_link(&chars, i + 2)
+                {
                     // Step over the image, then over the link closing it.
                     i = match closing_link_from(&chars, inner_end) {
                         Some(end) => end,

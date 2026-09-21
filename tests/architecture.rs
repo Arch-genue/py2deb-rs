@@ -56,7 +56,10 @@ fn any_resolves_to_this_machine() {
         .expect("any should resolve");
 
     assert_eq!(resolved.as_str(), dpkg_architecture());
-    assert!(resolved.is_valid_for_binary(), "resolving must yield a usable value");
+    assert!(
+        resolved.is_valid_for_binary(),
+        "resolving must yield a usable value"
+    );
 }
 
 #[test]
@@ -94,7 +97,10 @@ fn uname_spellings_are_normalised_to_dpkg_names() {
 
 #[test]
 fn parsing_is_case_and_space_insensitive() {
-    assert_eq!(Architecture::from_str("  AMD64 ").unwrap(), Architecture::Amd64);
+    assert_eq!(
+        Architecture::from_str("  AMD64 ").unwrap(),
+        Architecture::Amd64
+    );
 }
 
 #[test]

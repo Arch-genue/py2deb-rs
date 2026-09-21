@@ -1,21 +1,21 @@
-use std::path::{Path, PathBuf};
 use std::env;
 use std::fs;
+use std::path::{Path, PathBuf};
 
-use clap::{Parser, Subcommand};
 use anyhow::{Context, Result, bail};
-use toml::{Table, Value};
+use clap::{Parser, Subcommand};
 use colored::Colorize;
+use toml::{Table, Value};
 
+use py2deb::Verbosity;
+use py2deb::deb::build::DebianBuild;
 use py2deb::git;
 use py2deb::package::Package;
-use py2deb::deb::build::DebianBuild;
-use py2deb::Verbosity;
 
 #[derive(Parser)]
 #[command(version, about)]
 struct CliArgs {
-    #[arg(long, value_name="PATH")]
+    #[arg(long, value_name = "PATH")]
     path: Option<String>,
     #[arg(short, long, global = true)]
     quiet: bool,
@@ -37,7 +37,7 @@ enum Commands {
     /// Build project in current directory
     Build,
     /// Show project info
-    Show
+    Show,
 }
 
 fn main() -> Result<()> {
@@ -53,13 +53,17 @@ fn main() -> Result<()> {
 
     match cli.command {
         Some(Commands::Init) => {
-            let filename = project_path.file_name().and_then(|f| f.to_str()).context("Parent path has no file name")?;
+            let filename = project_path
+                .file_name()
+                .and_then(|f| f.to_str())
+                .context("Parent path has no file name")?;
             let is_exists: bool = config_path.exists();
             if !is_exists {
                 fs::File::create(&config_path)?;
             }
 
-            let config_toml = fs::read_to_string(&config_path).with_context(|| format!("Failed to read {}", config_path.display()))?;
+            let config_toml = fs::read_to_string(&config_path)
+                .with_context(|| format!("Failed to read {}", config_path.display()))?;
             let value: toml::Value = toml::from_str(&config_toml)?;
             if let Some(section) = value.get("tool").and_then(|t| t.get("py2deb")) {
                 let package: Package = section.clone().try_into()?;
@@ -71,20 +75,13 @@ fn main() -> Result<()> {
             let mut table: Table = config_toml.parse()?;
             let mut tool = Table::new();
 
-            let new_package = Package::new(
-                filename,
-                "0.1.0",
-                "Description here"
-            );
+            let new_package = Package::new(filename, "0.1.0", "Description here");
             let new_package_value = Value::try_from(new_package)?;
-                tool.insert("py2deb".into(), new_package_value);
-                table.insert(
-                    "tool".into(),
-                    Value::Table(tool),
-            );
+            tool.insert("py2deb".into(), new_package_value);
+            table.insert("tool".into(), Value::Table(tool));
 
             fs::write(&config_path, toml::to_string_pretty(&table)?)?;
-        },
+        }
         Some(Commands::Build) => {
             if !config_path.exists() {
                 bail!("pyproject.toml not found!");
@@ -96,19 +93,33 @@ fn main() -> Result<()> {
             }
 
             if verbosity.is_normal() {
-                eprintln!("{:>12} {} {} ({})", "Packaging".green(), package.package, package.version, project_path.display());
+                eprintln!(
+                    "{:>12} {} {} ({})",
+                    "Packaging".green(),
+                    package.package,
+                    package.version,
+                    project_path.display()
+                );
             }
             let mut build = DebianBuild::new(package, project_path).with_verbosity(verbosity);
             let build_info = build.build()?;
             if verbosity.is_normal() {
                 let file_size = fs::metadata(&build_info.deb_path)?.len();
-                eprintln!("{:>12} target in {:.2?} ({} KiB)", "Finished".green(), build_info.time, file_size / 1024);
+                eprintln!(
+                    "{:>12} target in {:.2?} ({} KiB)",
+                    "Finished".green(),
+                    build_info.time,
+                    file_size / 1024
+                );
             }
             println!("{}", build_info.deb_path.display());
-        },
+        }
         None | Some(Commands::Show) => {
             if !config_path.exists() {
-                bail!("Cannot not find pyproject.toml in `{}`", project_path.display());
+                bail!(
+                    "Cannot not find pyproject.toml in `{}`",
+                    project_path.display()
+                );
             }
             let mut package = Package::from_config(&config_path)?;
 
@@ -131,7 +142,11 @@ fn main() -> Result<()> {
 /// Refuses rather than guesses when the tree is not a repository: the flag was
 /// asked for explicitly, and silently shipping the plain version would produce
 /// exactly the duplicate the flag exists to avoid.
-fn apply_git_version(package: &mut Package, project_path: &Path, verbosity: Verbosity) -> Result<()> {
+fn apply_git_version(
+    package: &mut Package,
+    project_path: &Path,
+    verbosity: Verbosity,
+) -> Result<()> {
     if !git::is_repository(project_path) {
         bail!(
             "--git-version needs a git repository, but {} is not one",

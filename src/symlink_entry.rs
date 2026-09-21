@@ -41,7 +41,10 @@ impl<'de> Deserialize<'de> for SymlinkEntry {
             )));
         }
 
-        Ok(Self { target: target.clone(), link: link.clone() })
+        Ok(Self {
+            target: target.clone(),
+            link: link.clone(),
+        })
     }
 }
 
@@ -93,7 +96,11 @@ fn top_level(path: &Path) -> Option<std::path::Component<'_>> {
 /// Both are package-root-relative, so the shared leading directories cancel
 /// out and whatever remains of the link's path becomes `..` hops.
 fn relative_target(link: &Path, target: &Path) -> PathBuf {
-    let link_dir: Vec<_> = link.parent().unwrap_or(Path::new("")).components().collect();
+    let link_dir: Vec<_> = link
+        .parent()
+        .unwrap_or(Path::new(""))
+        .components()
+        .collect();
     let target_parts: Vec<_> = target.components().collect();
 
     let shared = link_dir

@@ -1,23 +1,23 @@
-use crate::{Verbosity, git};
 use crate::include_entry::IncludeEntry;
-use crate::symlink_entry::SymlinkEntry;
 use crate::info::BuildInfo;
 use crate::package::Package;
+use crate::symlink_entry::SymlinkEntry;
+use crate::{Verbosity, git};
 
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
 use std::fs;
-use std::process::{Command, Stdio};
 use std::io::{Write, empty};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use anyhow::{Result, Context, bail};
+use anyhow::{Context, Result, bail};
 use ignore::{WalkBuilder, overrides::OverrideBuilder};
 
-use flate2::write::GzEncoder;
 use flate2::Compression;
-use tar::{Header as TarHeader, Builder as TarBuilder};
-use md5::{Md5, Digest};
+use flate2::write::GzEncoder;
+use md5::{Digest, Md5};
+use tar::{Builder as TarBuilder, Header as TarHeader};
 
 use colored::Colorize;
 
@@ -51,14 +51,14 @@ const ALWAYS_EXCLUDED: &[&str] = &[
 struct EntryOption {
     path: PathBuf,
     rel_str: String,
-    chmod: u32
+    chmod: u32,
 }
 impl Default for EntryOption {
     fn default() -> Self {
         Self {
             path: PathBuf::from("/"),
             rel_str: "".to_string(),
-            chmod: 0o644
+            chmod: 0o644,
         }
     }
 }
@@ -87,13 +87,13 @@ pub struct DebianBuild {
     /// HashSet for created dirs
     created_dirs: HashSet<String>,
     /// Summary files size in data.tar.gz
-    data_bytes: u64
+    data_bytes: u64,
 }
 
 impl DebianBuild {
     pub fn new(package: Package, current_path: PathBuf) -> Self {
-        Self { 
-            package, 
+        Self {
+            package,
             current_path: current_path.clone(),
             source_path: current_path,
             verbosity: Verbosity::Normal,
@@ -103,7 +103,7 @@ impl DebianBuild {
             md5sums: HashMap::new(),
             mtime: 0,
             created_dirs: HashSet::new(),
-            data_bytes: 0
+            data_bytes: 0,
         }
     }
     pub fn with_verbosity(mut self, verbosity: Verbosity) -> Self {
@@ -112,7 +112,6 @@ impl DebianBuild {
     }
 
     pub fn check(&mut self) -> Result<()> {
-
         Ok(())
     }
 
@@ -149,14 +148,13 @@ impl DebianBuild {
             bail!("Cannot find source path {}", self.source_path.display());
         }
 
-        self.build_data_archive().context("Unable to create data.tar.gz")?;
-        self.build_control_archive().context("Unable to create control.tar.gz")?;
+        self.build_data_archive()
+            .context("Unable to create data.tar.gz")?;
+        self.build_control_archive()
+            .context("Unable to create control.tar.gz")?;
         let deb_path = self.build_ar_archive().context("Unable to create ar deb")?;
-        
-        let build_info = BuildInfo::new(
-            deb_path,
-            started.elapsed()
-        );
+
+        let build_info = BuildInfo::new(deb_path, started.elapsed());
 
         Ok(build_info)
     }
@@ -229,7 +227,7 @@ impl DebianBuild {
     fn build_data_archive(&mut self) -> Result<()> {
         if self.verbosity.is_normal() {
             eprintln!("{:>13} data.tar.gz archive", "Building".blue());
-        }   
+        }
 
         // `src = "$skip"` packages nothing into dist-packages; the contents
         // come from `include` alone. Useful for a package that ships a binary
@@ -237,7 +235,11 @@ impl DebianBuild {
         let skip_source = self.package.skips_source();
 
         if !skip_source {
-            let filename = self.current_path.file_name().and_then(|f| f.to_str()).context("Parent path has no file name")?;
+            let filename = self
+                .current_path
+                .file_name()
+                .and_then(|f| f.to_str())
+                .context("Parent path has no file name")?;
             let dest_name = self.package.dest.clone().unwrap_or(filename.to_string());
 
             if dest_name.is_empty() {
@@ -255,11 +257,13 @@ impl DebianBuild {
         let target_deb_path = self.current_path.join("target").join("debian");
         self.target_deb_path = self.current_path.join("target").join("debian");
         if !target_deb_path.exists() {
-            fs::create_dir_all(&target_deb_path).context("Cannot create target/debian directory")?;
+            fs::create_dir_all(&target_deb_path)
+                .context("Cannot create target/debian directory")?;
         }
-        
+
         // Tar pack
-        let tar_file = fs::File::create(target_deb_path.join("data.tar.gz")).context("Cannot create data.tar.gz file")?;
+        let tar_file = fs::File::create(target_deb_path.join("data.tar.gz"))
+            .context("Cannot create data.tar.gz file")?;
         let encoder = GzEncoder::new(tar_file, Compression::default());
         let mut data_archive = TarBuilder::new(encoder);
 
@@ -277,15 +281,32 @@ impl DebianBuild {
             let entry = entry.context("Failed to walk the source tree")?;
             let path = entry.path();
 
-            let nd_path = path.strip_prefix(&self.source_path).with_context(|| format!("{} is not inside {}", path.display(), self.source_path.display()))?;
-            
+            let nd_path = path.strip_prefix(&self.source_path).with_context(|| {
+                format!(
+                    "{} is not inside {}",
+                    path.display(),
+                    self.source_path.display()
+                )
+            })?;
+
             let relative_path: PathBuf = self.tar_root_path.join(nd_path);
             if path.is_dir() {
                 // The path may already end in a slash; tar wants exactly one.
                 let dir = relative_path.display().to_string();
-                self.write_dir_entry(&mut data_archive, format!("./{}/", dir.trim_end_matches('/')))?;
+                self.write_dir_entry(
+                    &mut data_archive,
+                    format!("./{}/", dir.trim_end_matches('/')),
+                )?;
             } else {
-                self.write_file_entry(&mut data_archive, EntryOption{path: path.to_path_buf(), rel_str: format!("./{}", relative_path.display()), ..Default::default()}, true)?;
+                self.write_file_entry(
+                    &mut data_archive,
+                    EntryOption {
+                        path: path.to_path_buf(),
+                        rel_str: format!("./{}", relative_path.display()),
+                        ..Default::default()
+                    },
+                    true,
+                )?;
             }
         }
 
@@ -294,13 +315,13 @@ impl DebianBuild {
         let copyright_contents = self.generate_copyright()?;
 
         fs::write(&copyright_path, copyright_contents).context("Cannot create copyright file")?;
-        let copyright_entry = IncludeEntry{
+        let copyright_entry = IncludeEntry {
             src: "target/debian/copyright".into(),
             dest: "usr/share/doc/$package/copyright".into(),
-            mode: Some(0o644)
+            mode: Some(0o644),
         };
         self.package.include.push(copyright_entry);
-        
+
         if let Some(changelog_contents) = self.generate_changelog() {
             let changelog_path = self.target_deb_path.join("changelog.gz");
 
@@ -309,11 +330,14 @@ impl DebianBuild {
             let compressed = encoder.finish()?;
             fs::write(&changelog_path, compressed)?;
 
-            let rel_changelog_path = changelog_path.strip_prefix(&self.current_path).unwrap().to_path_buf();
-            let changelog_entry = IncludeEntry{
+            let rel_changelog_path = changelog_path
+                .strip_prefix(&self.current_path)
+                .unwrap()
+                .to_path_buf();
+            let changelog_entry = IncludeEntry {
                 src: rel_changelog_path.to_string_lossy().to_string(),
                 dest: "usr/share/doc/$package/changelog.gz".into(),
-                mode: Some(0o644)
+                mode: Some(0o644),
             };
             self.package.include.push(changelog_entry);
         }
@@ -325,7 +349,9 @@ impl DebianBuild {
             if !src_path.exists() {
                 bail!("Include entry not exists {}", src_path.display());
             }
-            let dest_path = entry.resolve_dest(&src_path, &self.package).context("Cannot resolve dest in include field")?;
+            let dest_path = entry
+                .resolve_dest(&src_path, &self.package)
+                .context("Cannot resolve dest in include field")?;
 
             if src_path.is_dir() {
                 self.include_directory(&mut data_archive, entry, &src_path, &dest_path)?;
@@ -337,11 +363,21 @@ impl DebianBuild {
 
             // An include may land anywhere, so its parents are not covered by
             // the walk above; dpkg needs every one of them present.
-            if let Some(parent) = dest_path.parent() && !parent.as_os_str().is_empty() {
+            if let Some(parent) = dest_path.parent()
+                && !parent.as_os_str().is_empty()
+            {
                 self.write_dir_entry(&mut data_archive, format!("./{}/", parent.display()))?;
             }
 
-            self.write_file_entry(&mut data_archive, EntryOption{path: src_path, rel_str: format!("./{}", dest_path.display()), chmod: chmode}, true)?;
+            self.write_file_entry(
+                &mut data_archive,
+                EntryOption {
+                    path: src_path,
+                    rel_str: format!("./{}", dest_path.display()),
+                    chmod: chmode,
+                },
+                true,
+            )?;
         }
 
         // After the includes, so anything a link points at is already present.
@@ -350,9 +386,14 @@ impl DebianBuild {
             self.write_symlink_entry(&mut data_archive, entry)?;
         }
 
-        let count  = self.md5sums.len();
+        let count = self.md5sums.len();
         if self.verbosity.is_normal() {
-            eprintln!("{:>15} {} files, {} KiB", "Collected".blue(), count, self.data_bytes / 1024);
+            eprintln!(
+                "{:>15} {} files, {} KiB",
+                "Collected".blue(),
+                count,
+                self.data_bytes / 1024
+            );
         }
 
         data_archive.finish()?;
@@ -393,7 +434,11 @@ impl DebianBuild {
             .git_global(false)
             .git_exclude(false)
             .require_git(false)
-            .overrides(overrides.build().context("Cannot build the exclude rules")?)
+            .overrides(
+                overrides
+                    .build()
+                    .context("Cannot build the exclude rules")?,
+            )
             .build())
     }
 
@@ -417,9 +462,9 @@ impl DebianBuild {
             let found = found.with_context(|| format!("Failed to walk {}", src_root.display()))?;
             let path = found.path();
 
-            let relative = path
-                .strip_prefix(src_root)
-                .with_context(|| format!("{} is not inside {}", path.display(), src_root.display()))?;
+            let relative = path.strip_prefix(src_root).with_context(|| {
+                format!("{} is not inside {}", path.display(), src_root.display())
+            })?;
             let target = dest_root.join(relative);
 
             // Directories are not written on sight: one whose contents are
@@ -433,7 +478,9 @@ impl DebianBuild {
             let chmode = entry.resolve_mode(path).unwrap_or(0o644);
             self.warn_unexpected_mode(&target, chmode);
 
-            if let Some(parent) = target.parent() && !parent.as_os_str().is_empty() {
+            if let Some(parent) = target.parent()
+                && !parent.as_os_str().is_empty()
+            {
                 self.write_dir_entry(archive, format!("./{}/", parent.display()))?;
             }
 
@@ -466,11 +513,18 @@ impl DebianBuild {
         let target = entry.resolve_target(&self.package, &link);
 
         if self.verbosity.is_verbose() {
-            eprintln!("{:>15} {} -> {}", "Linking".blue(), link.display(), target.display());
+            eprintln!(
+                "{:>15} {} -> {}",
+                "Linking".blue(),
+                link.display(),
+                target.display()
+            );
         }
 
         // The directory holding the link may belong to no other entry.
-        if let Some(parent) = link.parent() && !parent.as_os_str().is_empty() {
+        if let Some(parent) = link.parent()
+            && !parent.as_os_str().is_empty()
+        {
             self.write_dir_entry(archive, format!("./{}/", parent.display()))?;
         }
 
@@ -487,7 +541,8 @@ impl DebianBuild {
         // Policy 10.9: a symlink's own mode is not used, and 0777 is what
         // dpkg and every other packaging tool writes.
         header.set_mode(0o777);
-        header.set_link_name(&target)
+        header
+            .set_link_name(&target)
             .with_context(|| format!("Cannot point {} at {}", link.display(), target.display()))?;
         header.set_cksum();
 
@@ -526,14 +581,19 @@ impl DebianBuild {
             // A licence like CC0 grants rights without naming an owner, so
             // there is nothing missing to report.
         } else if !package.maintainer.is_empty() {
-            out.push_str(&format!("Comment: Copyright information missing (maintainer: {})\n", package.maintainer));
+            out.push_str(&format!(
+                "Comment: Copyright information missing (maintainer: {})\n",
+                package.maintainer
+            ));
 
             eprintln!(
-                "{:>15} no copyright set; add `copyright = \"2026 Your Name\"` to [tool.py2deb]", "Warning".yellow().bold()
+                "{:>15} no copyright set; add `copyright = \"2026 Your Name\"` to [tool.py2deb]",
+                "Warning".yellow().bold()
             );
         } else {
             eprintln!(
-                "{:>15} Debian requires copyright information, but none could be determined", "Warning".yellow().bold()
+                "{:>15} Debian requires copyright information, but none could be determined",
+                "Warning".yellow().bold()
             );
         }
 
@@ -554,7 +614,10 @@ impl DebianBuild {
         let changelog = self.package.changelog.trim();
 
         if changelog.is_empty() {
-            eprintln!("{:>15} Changelog file not specified", "Warning".yellow().bold());
+            eprintln!(
+                "{:>15} Changelog file not specified",
+                "Warning".yellow().bold()
+            );
             return None;
         }
 
@@ -596,7 +659,11 @@ impl DebianBuild {
         let releases = match git::releases(&self.current_path, &self.package.version, limit) {
             Ok(releases) => releases,
             Err(error) => {
-                eprintln!("{:>15} cannot read git history: {:#}", "Warning".yellow().bold(), error);
+                eprintln!(
+                    "{:>15} cannot read git history: {:#}",
+                    "Warning".yellow().bold(),
+                    error
+                );
                 return None;
             }
         };
@@ -690,9 +757,7 @@ impl DebianBuild {
     /// lintian reports too.
     fn warn_unexpected_mode(&self, dest: &Path, mode: u32) {
         let dest_str = dest.to_string_lossy();
-        let in_bin_dir = ["bin/", "sbin/"]
-            .iter()
-            .any(|dir| dest_str.contains(dir));
+        let in_bin_dir = ["bin/", "sbin/"].iter().any(|dir| dest_str.contains(dir));
         let executable = mode & 0o111 != 0;
 
         if in_bin_dir && !executable {
@@ -732,7 +797,8 @@ impl DebianBuild {
             fs::create_dir(&target_deb_path).context("Cannot create target/debian directory")?;
         }
 
-        let tar_file = fs::File::create(target_deb_path.join("control.tar.gz")).context("Cannot create control.tar.gz file")?;
+        let tar_file = fs::File::create(target_deb_path.join("control.tar.gz"))
+            .context("Cannot create control.tar.gz file")?;
         let encoder = GzEncoder::new(tar_file, Compression::default());
         let mut control_archive = TarBuilder::new(encoder);
 
@@ -746,7 +812,11 @@ impl DebianBuild {
         self.tar_header = Some(header);
 
         let control_path = target_deb_path.join("control");
-        fs::write(&control_path, self.package.generate_control(&self.current_path)).context("Cannot create control file")?;
+        fs::write(
+            &control_path,
+            self.package.generate_control(&self.current_path),
+        )
+        .context("Cannot create control file")?;
 
         // Collect md5 sums
         let md5sums_path = target_deb_path.join("md5sums");
@@ -757,13 +827,42 @@ impl DebianBuild {
         }
         fs::write(&md5sums_path, md5_strings).context("Cannot create md5sums file")?;
 
-        self.write_file_entry(&mut control_archive, EntryOption{path: control_path, rel_str: "./control".to_string(), ..EntryOption::default()}, false)?;
-        self.write_file_entry(&mut control_archive, EntryOption{path: md5sums_path, rel_str: "./md5sums".to_string(), ..EntryOption::default()}, false)?;
+        self.write_file_entry(
+            &mut control_archive,
+            EntryOption {
+                path: control_path,
+                rel_str: "./control".to_string(),
+                ..EntryOption::default()
+            },
+            false,
+        )?;
+        self.write_file_entry(
+            &mut control_archive,
+            EntryOption {
+                path: md5sums_path,
+                rel_str: "./md5sums".to_string(),
+                ..EntryOption::default()
+            },
+            false,
+        )?;
 
-        let scripts = self.create_control_scripts().context("Cannot create control scripts")?;
+        let scripts = self
+            .create_control_scripts()
+            .context("Cannot create control scripts")?;
         for script_path in scripts {
-            let filename = script_path.file_name().and_then(|f| f.to_str()).context("Cannot get script filename")?;
-            self.write_file_entry(&mut control_archive, EntryOption{path: script_path.clone(), rel_str: format!("./{}", filename), chmod: 0o755}, false)?;
+            let filename = script_path
+                .file_name()
+                .and_then(|f| f.to_str())
+                .context("Cannot get script filename")?;
+            self.write_file_entry(
+                &mut control_archive,
+                EntryOption {
+                    path: script_path.clone(),
+                    rel_str: format!("./{}", filename),
+                    chmod: 0o755,
+                },
+                false,
+            )?;
         }
 
         control_archive.finish()?;
@@ -774,25 +873,31 @@ impl DebianBuild {
     fn create_control_scripts(&mut self) -> Result<Vec<PathBuf>> {
         let target_deb_path = self.current_path.join("target").join("debian");
         let mut scripts: Vec<PathBuf> = Vec::new();
-        let postinst = format!("#!/bin/sh
+        let postinst = format!(
+            "#!/bin/sh
 set -e
 case \"$1\" in
     configure)
         py3compile -p {}
     ;;
 esac
-", self.package.package);
-        let prerm = format!("#!/bin/sh
+",
+            self.package.package
+        );
+        let prerm = format!(
+            "#!/bin/sh
 set -e
 case \"$1\" in
     remove|upgrade|deconfigure)
         py3clean -p {}
     ;;
 esac
-", self.package.package);
+",
+            self.package.package
+        );
         let postinst_path = target_deb_path.join("postinst");
         let prerm_path = target_deb_path.join("prerm");
-        
+
         fs::write(&postinst_path, postinst).context("Unable to create postinst script")?;
         fs::write(&prerm_path, prerm).context("Unable to create prerm script")?;
         scripts.push(postinst_path);
@@ -828,7 +933,12 @@ esac
     /// `ar::Builder::append_path` would copy uid, gid and mtime from the build
     /// machine, which leaves the packager's own account stamped on the archive
     /// and makes builds unreproducible; every field is set explicitly instead.
-    fn append_ar_member<W: Write>(&self, builder: &mut ar::Builder<W>, name: &str, bytes: &[u8]) -> Result<()> {
+    fn append_ar_member<W: Write>(
+        &self,
+        builder: &mut ar::Builder<W>,
+        name: &str,
+        bytes: &[u8],
+    ) -> Result<()> {
         let mut header = ar::Header::new(name.as_bytes().to_vec(), bytes.len() as u64);
         header.set_mode(0o100644); // dpkg writes the file-type bits too
         header.set_mtime(self.mtime);
@@ -840,12 +950,20 @@ esac
             .with_context(|| format!("Cannot add {name} to the deb archive"))
     }
 
-    fn write_dir_entry<W: Write>(&mut self, archive: &mut TarBuilder<W>, rel_str: String) -> Result<()> {
+    fn write_dir_entry<W: Write>(
+        &mut self,
+        archive: &mut TarBuilder<W>,
+        rel_str: String,
+    ) -> Result<()> {
         if self.verbosity.is_verbose() {
             eprintln!("{:>15} {}", "Adding".blue(), rel_str.green());
         }
         let mut acc = String::from(".");
-        for segment in rel_str.trim_start_matches("./").trim_end_matches("/").split("/") {
+        for segment in rel_str
+            .trim_start_matches("./")
+            .trim_end_matches("/")
+            .split("/")
+        {
             if segment.is_empty() {
                 continue;
             }
@@ -879,7 +997,12 @@ esac
         Ok(())
     }
 
-    fn write_file_entry<W: Write>(&mut self, archive: &mut TarBuilder<W>, entry: EntryOption, data_tar: bool) -> Result<()> {
+    fn write_file_entry<W: Write>(
+        &mut self,
+        archive: &mut TarBuilder<W>,
+        entry: EntryOption,
+        data_tar: bool,
+    ) -> Result<()> {
         if self.verbosity.is_verbose() {
             eprintln!("{:>15} {}", "Adding".blue(), entry.rel_str);
         }
