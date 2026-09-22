@@ -8,7 +8,7 @@ binary itself. Archives are assembled in-process, so packaging works the same on
 machine with or without `dpkg-dev` installed.
 
 > **Status: early development.** The configuration format is settled; archive
-> generation is still being built out. Not yet published to crates.io.
+> generation is still being built out.
 
 ## Why
 
@@ -23,7 +23,7 @@ next to the code it describes, and get a `.deb` out.
 ## Install
 
 ```sh
-cargo install --path .
+cargo install py2deb
 ```
 
 ## Usage
@@ -66,8 +66,8 @@ dependencies = [
 
 | Field | Required | Description |
 | --- | --- | --- |
-| `package` | yes | Debian package name. Lowercase, `[a-z0-9][a-z0-9+.-]+`; library packages are conventionally prefixed `python3-`. |
-| `version` | yes | Upstream version, optionally with a Debian revision (`0.1-2`). |
+| `package` | yes¹ | Debian package name. Lowercase, library packages are conventionally prefixed `python3-`. |
+| `version` | yes¹ | Upstream version, optionally with a Debian revision (`0.1-2`). |
 | `arch` | no | Target architecture, default `all`. |
 | `maintainer` | no | RFC 822 form: `Name <email>`. Falls back to git config. |
 | `dependencies` | no | Debian package names for the `Depends` field. |
@@ -78,6 +78,34 @@ dependencies = [
 | `changelog` | no | `$git` / `$git(N)` to build one from git, or a path to a changelog written by hand. |
 | `distribution` | no | Suite the entries are released to, default `unstable`. |
 | `urgency` | no | `low`, `medium`, `high`, `emergency` or `critical`, default `medium`. |
+
+¹ Unless `[project]` supplies them — see [Inheriting from `[project]`](#inheriting-from-project).
+
+### Inheriting from `[project]`
+
+A project that already declares itself the standard way (PEP 621) need not say
+it twice. When `package` or `version` is missing from `[tool.py2deb]`, the value
+is taken from `[project]`:
+
+```toml
+[project]
+name = "libgkeyboard"
+version = "0.1"
+
+[tool.py2deb]
+maintainer = "Vlad Kartsaev <vkarcaev@gmail.com>"
+```
+
+`package` comes from `project.name` — the two fields hold the same thing under
+different names. Python's naming rules are looser than Debian's, so a name is
+lowercased and `_` becomes `-` on the way across: `My_Tool` arrives as
+`my-tool`. What PEP 621 allows but Debian does not is still rejected rather than
+mangled into something that only looks valid.
+
+Anything written in `[tool.py2deb]` wins, so a package whose Debian name differs
+from its PyPI one — `libgkeyboard` shipped as `python3-libgkeyboard` — states
+that explicitly and keeps `[project]` as it is. With the field in neither
+section, the build stops and says which one to add.
 
 ### Build script
 
@@ -188,7 +216,7 @@ reproducible from the hash.
 
 This is for CI, where a rebuild of the same `version` would otherwise collide
 with what is already published — an APT registry rejects a second upload of a
-version it already has (Gitea answers `409 Conflict`), since `apt` decides what
+version it already has, since `apt` decides what
 to upgrade by comparing versions, not contents.
 
 The ordering it produces is the one dpkg agrees with:
@@ -355,10 +383,6 @@ correctly on someone else's machine.
   them.
 
 ### Usability
-
-- **`py2deb init` defaults.** The generated `maintainer` placeholder does not
-  pass the tool's own validation; it should come from `DEBEMAIL`/`DEBFULLNAME`
-  or `git config`, the way `dh_make` does.
 - **Build hooks.** A command run before the archives are assembled, for
   projects that are not plain Python — compiling Cython extensions, generating
   Qt resources or `.ui` files, compiling translations. Whatever it writes into
