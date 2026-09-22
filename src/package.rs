@@ -204,14 +204,35 @@ impl Package {
     pub fn from_config(path: &Path) -> Result<Self> {
         let config_toml = fs::read_to_string(path)
             .with_context(|| format!("Failed to read {}", path.display()))?;
-
         let value: toml::Value = toml::from_str(&config_toml)
             .with_context(|| format!("{} is not valid TOML", path.display()))?;
-
-        let section = value
+        
+        let mut section = value
             .get("tool")
             .and_then(|t| t.get("py2deb"))
+            .cloned()
             .with_context(|| "Cannot find [tool.py2deb] section. Init project first".to_string())?;
+
+        // Fallbacks: PEP 621 [project], then [tool.poetry].
+        let fallback_sections = [
+            value.get("project"),
+            value.get("tool").and_then(|t| t.get("poetry")),
+        ];
+
+        if let Some(table) = section.as_table_mut() {
+            for (key, from) in [("package", "name"), ("version", "version")] {
+                if table.contains_key(key) {
+                    continue;
+                }
+                if let Some(v) = fallback_sections
+                    .iter()
+                    .flatten()
+                    .find_map(|s| s.get(from))
+                {
+                    table.insert(key.to_string(), v.clone());
+                }
+            }
+        }
 
         section
             .clone()
