@@ -2,6 +2,14 @@
 
 Build Debian packages from Python projects, configured entirely from `pyproject.toml`.
 
+<div align="center">
+
+![Crates.io Total Downloads](https://img.shields.io/crates/d/py2deb?color=%23e2763d)
+![Crates.io Version](https://img.shields.io/crates/v/py2deb)
+![GitHub License](https://img.shields.io/github/license/Arch-genue/py2deb-rs)
+    
+</div>
+
 `py2deb` reads a `[tool.py2deb]` section, collects Python sources, and builds a
 `.deb` — no `debian/` directory, no `debhelper`, no build dependencies beyond the
 binary itself. Archives are assembled in-process, so packaging works the same on any
